@@ -47,7 +47,7 @@ async def upload_image(file: UploadFile = File(...)) -> dict[str, str]:
     if not extracted_text:
         raise HTTPException(status_code=422, detail="No readable text found in image.")
 
-    audio_id = uuid4().hex
+    audio_id = uuid4()
     audio_path = AUDIO_DIR / f"{audio_id}.mp3"
 
     tts = gTTS(text=extracted_text, lang="en", slow=False)
@@ -58,8 +58,8 @@ async def upload_image(file: UploadFile = File(...)) -> dict[str, str]:
 
 @app.get("/api/audio/{audio_id}")
 async def get_audio(audio_id: UUID) -> FileResponse:
-    audio_path = AUDIO_DIR / f"{audio_id.hex}.mp3"
+    audio_path = AUDIO_DIR / f"{audio_id}.mp3"
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail="Audio file not found.")
 
-    return FileResponse(path=str(audio_path), media_type="audio/mpeg", filename=f"{audio_id.hex}.mp3")
+    return FileResponse(path=str(audio_path), media_type="audio/mpeg", filename=f"{audio_id}.mp3")
