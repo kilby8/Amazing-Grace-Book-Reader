@@ -1,8 +1,8 @@
-fastapi
-uvicorn
-python-multipart
-pytesseract
-gTTS
-pillow
-pytest
-httpx
+fastapi==0.136.1
+uvicorn==0.47.0
+python-multipart==0.0.29
+pytesseract==0.3.13
+gTTS==2.5.4
+pillow==12.2.0
+pytest==9.0.3
+httpx==0.28.1

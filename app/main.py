@@ -13,6 +13,7 @@ app = FastAPI(title="Amazing Grace Book Reader")
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 AUDIO_CACHE: dict[str, bytes] = {}
+MAX_AUDIO_CACHE_ITEMS = 100
 
 
 @app.get("/")
@@ -48,6 +49,16 @@ def text_to_speech_bytes(text: str) -> bytes:
     return audio_buffer.getvalue()
 
 
+def cache_audio(audio_bytes: bytes) -> str:
+    if len(AUDIO_CACHE) >= MAX_AUDIO_CACHE_ITEMS:
+        oldest_audio_id = next(iter(AUDIO_CACHE))
+        AUDIO_CACHE.pop(oldest_audio_id, None)
+
+    audio_id = str(uuid.uuid4())
+    AUDIO_CACHE[audio_id] = audio_bytes
+    return audio_id
+
+
 @app.post("/api/process")
 async def process_image(file: UploadFile = File(...)) -> dict[str, str]:
     if not file.content_type or not file.content_type.startswith("image/"):
@@ -60,8 +71,7 @@ async def process_image(file: UploadFile = File(...)) -> dict[str, str]:
     text = extract_text(image_data)
     audio_bytes = text_to_speech_bytes(text)
 
-    audio_id = str(uuid.uuid4())
-    AUDIO_CACHE[audio_id] = audio_bytes
+    audio_id = cache_audio(audio_bytes)
 
     return {"text": text, "audio_url": f"/api/audio/{audio_id}"}
 

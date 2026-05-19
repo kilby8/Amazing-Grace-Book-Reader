@@ -33,8 +33,13 @@ async function uploadImage(file) {
     textOutput.textContent = payload.text;
     audioPlayer.src = payload.audio_url;
     audioPlayer.load();
-    await audioPlayer.play();
-    setStatus("Done! Playing generated audio.");
+
+    try {
+      await audioPlayer.play();
+      setStatus("Done! Playing generated audio.");
+    } catch {
+      setStatus("Done! Audio is ready. Click Play to start.");
+    }
   } catch (error) {
     setStatus(error.message);
   }

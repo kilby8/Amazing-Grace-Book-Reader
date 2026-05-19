@@ -3,7 +3,7 @@ import io
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app.main import app
+from app.main import AUDIO_CACHE, app, cache_audio
 
 
 client = TestClient(app)
@@ -46,3 +46,14 @@ def test_audio_stream_returns_mp3(monkeypatch):
     assert audio_response.status_code == 200
     assert audio_response.headers["content-type"].startswith("audio/mpeg")
     assert audio_response.content == b"fake-mp3"
+
+
+def test_cache_audio_enforces_max_size(monkeypatch):
+    monkeypatch.setattr("app.main.MAX_AUDIO_CACHE_ITEMS", 1)
+
+    first = cache_audio(b"first")
+    second = cache_audio(b"second")
+
+    assert first not in AUDIO_CACHE
+    assert second in AUDIO_CACHE
+
