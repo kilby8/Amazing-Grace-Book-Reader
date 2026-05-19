@@ -69,6 +69,9 @@ class MainActivity : ComponentActivity() {
                         },
                         onTextScaleChange = { value ->
                             viewModel.setTextScale(value)
+                            dependencies.uiCoordinator.persistTextScale(
+                                viewModel.uiState.value.textScale
+                            )
                         },
                         onSpeechRateChangeFinished = {
                             dependencies.uiCoordinator.persistVoiceSettings(

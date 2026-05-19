@@ -34,6 +34,7 @@ class ReaderPreferencesTest {
         assertThat(snapshot.lastParsedText).isEqualTo("Amazing Grace text")
         assertThat(snapshot.speechRate).isEqualTo(1.4f)
         assertThat(snapshot.pitch).isEqualTo(0.8f)
+        assertThat(snapshot.textScale).isEqualTo(1.0f)
     }
 
     @Test
@@ -44,5 +45,14 @@ class ReaderPreferencesTest {
 
         assertThat(snapshot.speechRate).isEqualTo(2.0f)
         assertThat(snapshot.pitch).isEqualTo(0.5f)
+    }
+
+    @Test
+    fun saveTextScale_clampsOutOfRangeValues() = runBlocking {
+        readerPreferences.saveTextScale(2.2f)
+
+        val snapshot = readerPreferences.loadSnapshot()
+
+        assertThat(snapshot.textScale).isEqualTo(1.4f)
     }
 }

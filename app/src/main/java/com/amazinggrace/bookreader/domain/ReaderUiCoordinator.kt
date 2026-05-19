@@ -60,6 +60,12 @@ class ReaderUiCoordinator(
         }
     }
 
+    fun persistTextScale(textScale: Float) {
+        lifecycleOwner.lifecycleScope.launch {
+            sessionRepository.saveTextScale(textScale)
+        }
+    }
+
     fun deleteHistoryItem(id: Long) {
         lifecycleOwner.lifecycleScope.launch {
             historyRepository.deleteById(id)
@@ -75,6 +81,7 @@ class ReaderUiCoordinator(
     private suspend fun loadPersistedSession() {
         val snapshot = sessionRepository.loadSnapshot()
         viewModel.setVoiceSettings(snapshot.speechRate, snapshot.pitch)
+        viewModel.setTextScale(snapshot.textScale)
         playbackController.updateVoiceSettings(snapshot.speechRate, snapshot.pitch)
 
         if (snapshot.lastParsedText.isNotBlank()) {

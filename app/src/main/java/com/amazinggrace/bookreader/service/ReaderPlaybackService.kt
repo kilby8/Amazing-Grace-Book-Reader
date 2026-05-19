@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.view.KeyEvent
 import android.os.Build
 import android.os.IBinder
 import androidx.media.app.NotificationCompat.MediaStyle
@@ -24,10 +25,17 @@ import com.amazinggrace.bookreader.MainActivity
 import com.amazinggrace.bookreader.domain.PlaybackHighlightRange
 import com.amazinggrace.bookreader.domain.ReaderPlaybackStateStore
 import com.amazinggrace.bookreader.tts.TtsManager
+import com.amazinggrace.bookreader.tts.TtsManager.PlaybackStatus
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
 
 class ReaderPlaybackService : Service(), LifecycleOwner {
+
+    private enum class ServicePlaybackState {
+        PLAYING,
+        PAUSED,
+        STOPPED
+    }
 
     private val lifecycleRegistry = LifecycleRegistry(this)
     override val lifecycle: Lifecycle
@@ -38,7 +46,7 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
     private var currentText: String = ""
     private var speechRate: Float = 1.0f
     private var pitch: Float = 1.0f
-    private var isPlaying: Boolean = false
+    private var playbackState: ServicePlaybackState = ServicePlaybackState.STOPPED
     private var foregroundStarted: Boolean = false
     private lateinit var mediaSession: MediaSessionCompat
 
@@ -52,9 +60,17 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
             setPlaybackState(buildPlaybackState())
             setMetadata(buildMetadata())
             setCallback(object : MediaSessionCompat.Callback() {
+                private fun togglePlayPause() {
+                    if (playbackState == ServicePlaybackState.PLAYING) {
+                        onPause()
+                    } else {
+                        onPlay()
+                    }
+                }
+
                 override fun onPlay() {
                     if (currentText.isBlank()) return
-                    isPlaying = true
+                    playbackState = ServicePlaybackState.PLAYING
                     setPlaybackState(buildPlaybackState())
                     startInForeground()
                     ttsManager.speak(currentText)
@@ -63,7 +79,7 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
 
                 override fun onPause() {
                     ttsManager.pause()
-                    isPlaying = false
+                    playbackState = ServicePlaybackState.PAUSED
                     setPlaybackState(buildPlaybackState())
                     refreshNotification()
                 }
@@ -71,7 +87,50 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
                 override fun onStop() {
                     handleStop()
                 }
+
+                override fun onMediaButtonEvent(mediaButtonEvent: Intent?): Boolean {
+                    val keyEvent = mediaButtonEvent
+                        ?.getParcelableExtra<KeyEvent>(Intent.EXTRA_KEY_EVENT)
+                    if (keyEvent?.action != KeyEvent.ACTION_DOWN) {
+                        return super.onMediaButtonEvent(mediaButtonEvent)
+                    }
+
+                    return when (keyEvent.keyCode) {
+                        KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                        KeyEvent.KEYCODE_HEADSETHOOK -> {
+                            togglePlayPause()
+                            true
+                        }
+
+                        KeyEvent.KEYCODE_MEDIA_PLAY -> {
+                            onPlay()
+                            true
+                        }
+
+                        KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                            onPause()
+                            true
+                        }
+
+                        KeyEvent.KEYCODE_MEDIA_STOP -> {
+                            onStop()
+                            true
+                        }
+
+                        else -> super.onMediaButtonEvent(mediaButtonEvent)
+                    }
+                }
             })
+            setFlags(
+                MediaSessionCompat.FLAG_HANDLES_MEDIA_BUTTONS or
+                    MediaSessionCompat.FLAG_HANDLES_TRANSPORT_CONTROLS
+            )
+            setMediaButtonReceiver(
+                MediaButtonReceiver.buildMediaButtonPendingIntent(
+                    this@ReaderPlaybackService,
+                    PlaybackStateCompat.ACTION_PLAY_PAUSE
+                )
+            )
         }
         ttsManager = TtsManager(applicationContext, lifecycle)
         lifecycleRegistry.currentState = Lifecycle.State.STARTED
@@ -83,6 +142,19 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
                         ReaderPlaybackStateStore.updateActiveRange(
                             range?.let { PlaybackHighlightRange(it.start, it.endExclusive) }
                         )
+                        refreshNotification()
+                    }
+                }
+
+                launch {
+                    ttsManager.playbackStatus.collectLatest { status ->
+                        playbackState = when (status) {
+                            PlaybackStatus.PLAYING -> ServicePlaybackState.PLAYING
+                            PlaybackStatus.PAUSED -> ServicePlaybackState.PAUSED
+                            PlaybackStatus.STOPPED,
+                            PlaybackStatus.IDLE -> ServicePlaybackState.STOPPED
+                        }
+                        mediaSession.setPlaybackState(buildPlaybackState())
                         refreshNotification()
                     }
                 }
@@ -111,7 +183,7 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
         currentText = intent.getStringExtra(EXTRA_TEXT).orEmpty()
         applyVoiceSettings(intent)
         ttsManager.resetForNewText(currentText)
-        isPlaying = false
+        playbackState = ServicePlaybackState.PAUSED
         mediaSession.setPlaybackState(buildPlaybackState())
         mediaSession.setMetadata(buildMetadata())
         refreshNotification()
@@ -130,7 +202,7 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
             return
         }
 
-        isPlaying = true
+        playbackState = ServicePlaybackState.PLAYING
         mediaSession.setPlaybackState(buildPlaybackState())
         mediaSession.setMetadata(buildMetadata())
         startInForeground()
@@ -140,7 +212,7 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
 
     private fun handlePause() {
         ttsManager.pause()
-        isPlaying = false
+        playbackState = ServicePlaybackState.PAUSED
         mediaSession.setPlaybackState(buildPlaybackState())
         refreshNotification()
     }
@@ -148,7 +220,7 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
     private fun handleStop() {
         ttsManager.stop()
         ReaderPlaybackStateStore.updateActiveRange(null)
-        isPlaying = false
+        playbackState = ServicePlaybackState.STOPPED
         currentText = ""
         mediaSession.setPlaybackState(buildPlaybackState())
         mediaSession.setMetadata(buildMetadata())
@@ -195,7 +267,7 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
     private fun buildNotification(): Notification {
         val contentText = when {
             currentText.isBlank() -> "Ready to read"
-            isPlaying -> "Reading in background"
+            playbackState == ServicePlaybackState.PLAYING -> "Reading in background"
             else -> "Paused"
         }
 
@@ -209,20 +281,22 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
             .setContentText(contentText)
             .setSubText(currentText.preview())
             .setOnlyAlertOnce(true)
-            .setOngoing(isPlaying)
+            .setOngoing(playbackState == ServicePlaybackState.PLAYING)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(
                 PendingIntent.getActivity(
                     this,
                     10,
                     Intent(this, MainActivity::class.java).apply {
-                        flags = Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                        flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                            Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                            Intent.FLAG_ACTIVITY_CLEAR_TOP
                     },
                     pendingIntentFlags()
                 )
             )
 
-        if (isPlaying) {
+        if (playbackState == ServicePlaybackState.PLAYING) {
             builder.addAction(
                 android.R.drawable.ic_media_pause,
                 "Pause",
@@ -272,10 +346,10 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
             PlaybackStateCompat.ACTION_STOP or
             PlaybackStateCompat.ACTION_PLAY_PAUSE
 
-        val state = if (isPlaying) {
-            PlaybackStateCompat.STATE_PLAYING
-        } else {
-            PlaybackStateCompat.STATE_PAUSED
+        val state = when (playbackState) {
+            ServicePlaybackState.PLAYING -> PlaybackStateCompat.STATE_PLAYING
+            ServicePlaybackState.PAUSED -> PlaybackStateCompat.STATE_PAUSED
+            ServicePlaybackState.STOPPED -> PlaybackStateCompat.STATE_STOPPED
         }
 
         return PlaybackStateCompat.Builder()
@@ -286,10 +360,12 @@ class ReaderPlaybackService : Service(), LifecycleOwner {
 
     private fun buildMetadata(): MediaMetadataCompat {
         val durationHint = (currentText.length * 65L)
+        val textSnippet = currentText.preview()
         return MediaMetadataCompat.Builder()
-            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "Amazing Grace Reader")
-            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, "Text to Speech")
-            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_DESCRIPTION, currentText.preview())
+            .putString(MediaMetadataCompat.METADATA_KEY_TITLE, "Amazing Grace Book Reader")
+            .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, textSnippet)
+            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_SUBTITLE, textSnippet)
+            .putString(MediaMetadataCompat.METADATA_KEY_DISPLAY_DESCRIPTION, textSnippet)
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, durationHint)
             .build()
     }

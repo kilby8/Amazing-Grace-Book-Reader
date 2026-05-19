@@ -253,7 +253,9 @@ fun ReaderScreen(
                 )
 
                 val showOcrIssue = statusText.startsWith("OCR failed") ||
-                    statusText.startsWith("No text found")
+                    statusText.startsWith("No text found") ||
+                    statusText.startsWith("No text detected") ||
+                    statusText.startsWith("Text looks unclear")
                 if (showOcrIssue) {
                     Card(
                         modifier = Modifier.fillMaxWidth(),

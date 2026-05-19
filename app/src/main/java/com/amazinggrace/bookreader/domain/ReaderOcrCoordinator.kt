@@ -1,6 +1,7 @@
 package com.amazinggrace.bookreader.domain
 
 import android.graphics.Bitmap
+import com.amazinggrace.bookreader.ocr.OcrExtractionResult
 import com.amazinggrace.bookreader.ocr.TextExtractor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -25,21 +26,29 @@ class ReaderOcrCoordinator(
 ) {
 
     suspend fun process(bitmap: Bitmap): ReaderOcrResult {
-        val text = textExtractor.extractText(bitmap)
+        return when (val extraction = textExtractor.extractText(bitmap)) {
+            is OcrExtractionResult.Success -> {
+                withContext(Dispatchers.IO) {
+                    sessionWriter.saveLastParsedText(extraction.text)
+                    historyWriter.saveScan(extraction.text)
+                }
 
-        withContext(Dispatchers.IO) {
-            sessionWriter.saveLastParsedText(text)
-            if (text.isNotBlank()) {
-                historyWriter.saveScan(text)
+                ReaderOcrResult(
+                    text = extraction.text,
+                    statusText = "OCR complete. Ready to play audio."
+                )
+            }
+
+            is OcrExtractionResult.Failure -> {
+                withContext(Dispatchers.IO) {
+                    sessionWriter.saveLastParsedText("")
+                }
+
+                ReaderOcrResult(
+                    text = "",
+                    statusText = extraction.message
+                )
             }
         }
-
-        val statusText = if (text.isBlank()) {
-            "No text found in image."
-        } else {
-            "OCR complete. Ready to play audio."
-        }
-
-        return ReaderOcrResult(text = text, statusText = statusText)
     }
 }

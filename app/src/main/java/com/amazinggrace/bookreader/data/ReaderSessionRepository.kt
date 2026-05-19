@@ -14,4 +14,8 @@ class ReaderSessionRepository(
     suspend fun saveVoiceSettings(speechRate: Float, pitch: Float) {
         preferences.saveVoiceSettings(speechRate, pitch)
     }
+
+    suspend fun saveTextScale(textScale: Float) {
+        preferences.saveTextScale(textScale)
+    }
 }

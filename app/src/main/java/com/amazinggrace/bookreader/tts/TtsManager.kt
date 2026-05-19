@@ -22,6 +22,13 @@ class TtsManager(
 
     data class ActiveTextRange(val start: Int, val endExclusive: Int)
 
+    enum class PlaybackStatus {
+        IDLE,
+        PLAYING,
+        PAUSED,
+        STOPPED
+    }
+
     private val playbackSessionState = PlaybackSessionState()
     private val appContext = context.applicationContext
     private val audioManager = appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -65,6 +72,8 @@ class TtsManager(
     private var resumeAfterAudioFocusGain = false
     private val _activeRange = MutableStateFlow<ActiveTextRange?>(null)
     val activeRange: StateFlow<ActiveTextRange?> = _activeRange.asStateFlow()
+    private val _playbackStatus = MutableStateFlow(PlaybackStatus.IDLE)
+    val playbackStatus: StateFlow<PlaybackStatus> = _playbackStatus.asStateFlow()
 
     init {
         lifecycle.addObserver(this)
@@ -77,17 +86,20 @@ class TtsManager(
             if (isReady) {
                 textToSpeech?.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
                     override fun onStart(utteranceId: String?) {
+                        _playbackStatus.value = PlaybackStatus.PLAYING
                         _activeRange.value = null
                     }
 
                     override fun onDone(utteranceId: String?) {
                         if (utteranceId == "amazing_grace_reader_utterance") {
                             playbackSessionState.onUtteranceDone()
+                            _playbackStatus.value = PlaybackStatus.STOPPED
                         }
                         _activeRange.value = null
                     }
 
                     override fun onError(utteranceId: String?) {
+                        _playbackStatus.value = PlaybackStatus.STOPPED
                         _activeRange.value = null
                     }
 
@@ -128,6 +140,7 @@ class TtsManager(
 
         resumeAfterAudioFocusGain = false
         playbackSessionState.onPause()
+        _playbackStatus.value = PlaybackStatus.PAUSED
         _activeRange.value = null
         textToSpeech?.stop()
         abandonAudioFocus()
@@ -136,6 +149,7 @@ class TtsManager(
     fun stop() {
         resumeAfterAudioFocusGain = false
         playbackSessionState.onStop()
+        _playbackStatus.value = PlaybackStatus.STOPPED
         _activeRange.value = null
         textToSpeech?.stop()
         abandonAudioFocus()
@@ -144,6 +158,7 @@ class TtsManager(
     fun resetForNewText(newText: String) {
         resumeAfterAudioFocusGain = false
         playbackSessionState.resetForNewText(newText)
+        _playbackStatus.value = PlaybackStatus.STOPPED
         _activeRange.value = null
         textToSpeech?.stop()
         abandonAudioFocus()
@@ -169,6 +184,7 @@ class TtsManager(
 
     private fun pauseForAudioFocus() {
         playbackSessionState.onPause()
+        _playbackStatus.value = PlaybackStatus.PAUSED
         _activeRange.value = null
         textToSpeech?.stop()
         abandonAudioFocus()
@@ -207,6 +223,7 @@ class TtsManager(
 
     override fun onDestroy(owner: LifecycleOwner) {
         super.onDestroy(owner)
+        _playbackStatus.value = PlaybackStatus.STOPPED
         _activeRange.value = null
         textToSpeech?.stop()
         textToSpeech?.shutdown()
