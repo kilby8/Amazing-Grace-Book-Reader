@@ -9,6 +9,7 @@ from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from gtts import gTTS
+from gtts.tts import gTTSError
 from PIL import Image, UnidentifiedImageError
 
 
@@ -50,15 +51,22 @@ async def upload_image(file: UploadFile = File(...)) -> dict[str, str]:
     audio_id = uuid4()
     audio_path = AUDIO_DIR / f"{audio_id}.mp3"
 
-    tts = gTTS(text=extracted_text, lang="en", slow=False)
-    tts.save(str(audio_path))
+    try:
+        tts = gTTS(text=extracted_text, lang="en", slow=False)
+        tts.save(str(audio_path))
+    except (gTTSError, OSError) as exc:
+        raise HTTPException(status_code=502, detail="Failed to generate audio. Please try again later.") from exc
 
     return {"text": extracted_text, "audio_url": f"/api/audio/{audio_id}"}
 
 
 @app.get("/api/audio/{audio_id}")
 async def get_audio(audio_id: UUID) -> FileResponse:
-    audio_path = AUDIO_DIR / f"{audio_id}.mp3"
+    audio_candidates = {path.stem: path for path in AUDIO_DIR.glob("*.mp3")}
+    audio_path = audio_candidates.get(str(audio_id))
+    if audio_path is None:
+        raise HTTPException(status_code=404, detail="Audio file not found.")
+
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail="Audio file not found.")
 
