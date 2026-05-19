@@ -1,0 +1,22 @@
+<resources>
+    <string name="app_name">Amazing Grace Book Reader</string>
+    <string name="pick_image">Pick Image</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="stop">Stop</string>
+    <string name="status_select_screenshot">Select a screenshot to extract text.</string>
+    <string name="status_running_ocr">Running OCR...</string>
+    <string name="status_no_text_found">No text found in the selected image.</string>
+    <string name="status_text_extracted">Text extracted successfully.</string>
+    <string name="status_ocr_failed">OCR failed: %1$s</string>
+    <string name="status_no_text_to_play">No extracted text available to play.</string>
+    <string name="status_playback_restarted">Playback restarted from the beginning.</string>
+    <string name="status_already_playing">Already playing.</string>
+    <string name="status_playback_started">Playback started.</string>
+    <string name="status_playback_paused">Playback paused. Press Play to restart from the beginning.</string>
+    <string name="status_nothing_playing">Nothing is currently playing.</string>
+    <string name="status_playback_stopped">Playback stopped.</string>
+    <string name="status_playback_already_stopped">Playback is already stopped.</string>
+    <string name="placeholder_extracted_text">Extracted text appears here.</string>
+    <string name="playback_note">Note: Pause followed by Play restarts from the beginning.</string>
+</resources>
