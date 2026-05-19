@@ -124,7 +124,7 @@ private fun ReaderScreen() {
                     when (ttsManager.playbackState) {
                         TtsManager.PlaybackState.PAUSED -> {
                             ttsManager.resume()
-                            statusMessage = "Playback resumed from the beginning."
+                            statusMessage = "Playback restarted from the beginning."
                         }
                         TtsManager.PlaybackState.PLAYING -> {
                             statusMessage = "Already playing."
@@ -144,7 +144,7 @@ private fun ReaderScreen() {
                 onClick = {
                     if (ttsManager.playbackState == TtsManager.PlaybackState.PLAYING) {
                         ttsManager.pause()
-                        statusMessage = "Playback paused. Resume restarts from the beginning."
+                        statusMessage = "Playback paused. Press Play to restart from the beginning."
                     } else {
                         statusMessage = "Nothing is currently playing."
                     }
