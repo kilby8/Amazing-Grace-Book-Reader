@@ -49,7 +49,7 @@ Then open: `http://127.0.0.1:8000`
 
 - `POST /api/upload`  
   Accepts an image file and returns extracted text plus an audio URL.
-- `GET /api/audio/{audio_file}`  
+- `GET /api/audio/{audio_id}`  
   Returns generated MP3 audio for playback.
 
 ## Project Structure

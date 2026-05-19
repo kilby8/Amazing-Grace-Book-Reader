@@ -1,9 +1,8 @@
 from __future__ import annotations
 
 import io
-import re
 from pathlib import Path
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 import pytesseract
 from fastapi import FastAPI, File, HTTPException, UploadFile
@@ -58,12 +57,9 @@ async def upload_image(file: UploadFile = File(...)) -> dict[str, str]:
 
 
 @app.get("/api/audio/{audio_id}")
-async def get_audio(audio_id: str) -> FileResponse:
-    if not re.fullmatch(r"[a-f0-9]{32}", audio_id):
-        raise HTTPException(status_code=400, detail="Invalid audio id.")
-
-    audio_path = AUDIO_DIR / f"{audio_id}.mp3"
+async def get_audio(audio_id: UUID) -> FileResponse:
+    audio_path = AUDIO_DIR / f"{audio_id.hex}.mp3"
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail="Audio file not found.")
 
-    return FileResponse(path=str(audio_path), media_type="audio/mpeg", filename=f"{audio_id}.mp3")
+    return FileResponse(path=str(audio_path), media_type="audio/mpeg", filename=f"{audio_id.hex}.mp3")
