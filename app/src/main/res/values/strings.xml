@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">Amazing Grace Book Reader</string>
+    <string name="pick_image">Pick Image</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="stop">Stop</string>
+</resources>
