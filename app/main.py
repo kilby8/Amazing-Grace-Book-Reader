@@ -19,8 +19,6 @@ AUDIO_DIR = BASE_DIR / "generated_audio"
 AUDIO_DIR.mkdir(exist_ok=True)
 
 ALLOWED_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tiff", ".gif"}
-AUDIO_FILENAME_PATTERN = re.compile(r"^[a-f0-9-]+\.mp3$")
-
 app = FastAPI(title="Amazing Grace Book Reader")
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -51,22 +49,21 @@ async def upload_image(file: UploadFile = File(...)) -> dict[str, str]:
         raise HTTPException(status_code=422, detail="No readable text found in image.")
 
     audio_id = uuid4().hex
-    audio_filename = f"{audio_id}.mp3"
-    audio_path = AUDIO_DIR / audio_filename
+    audio_path = AUDIO_DIR / f"{audio_id}.mp3"
 
     tts = gTTS(text=extracted_text, lang="en", slow=False)
     tts.save(str(audio_path))
 
-    return {"text": extracted_text, "audio_url": f"/api/audio/{audio_filename}"}
+    return {"text": extracted_text, "audio_url": f"/api/audio/{audio_id}"}
 
 
-@app.get("/api/audio/{audio_file}")
-async def get_audio(audio_file: str) -> FileResponse:
-    if not AUDIO_FILENAME_PATTERN.match(audio_file):
-        raise HTTPException(status_code=400, detail="Invalid audio file name.")
+@app.get("/api/audio/{audio_id}")
+async def get_audio(audio_id: str) -> FileResponse:
+    if not re.fullmatch(r"[a-f0-9]{32}", audio_id):
+        raise HTTPException(status_code=400, detail="Invalid audio id.")
 
-    audio_path = AUDIO_DIR / audio_file
+    audio_path = AUDIO_DIR / f"{audio_id}.mp3"
     if not audio_path.exists():
         raise HTTPException(status_code=404, detail="Audio file not found.")
 
-    return FileResponse(path=str(audio_path), media_type="audio/mpeg", filename=audio_file)
+    return FileResponse(path=str(audio_path), media_type="audio/mpeg", filename=f"{audio_id}.mp3")

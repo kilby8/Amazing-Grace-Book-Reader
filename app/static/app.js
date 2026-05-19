@@ -69,8 +69,14 @@ uploadButton.addEventListener("click", async () => {
     extractedText.textContent = body.text;
     audioPlayer.src = `${body.audio_url}?t=${Date.now()}`;
     audioPlayer.load();
-    await audioPlayer.play().catch(() => {});
-    setStatus("Done. Audio generated successfully.");
+    try {
+      await audioPlayer.play();
+      setStatus("Done. Audio generated successfully.");
+    } catch {
+      setStatus(
+        "Audio generated successfully. Press Play to start if autoplay is blocked."
+      );
+    }
   } catch (error) {
     extractedText.textContent = "No text extracted yet.";
     setStatus(error.message || "Something went wrong.", true);
@@ -79,7 +85,9 @@ uploadButton.addEventListener("click", async () => {
 
 playButton.addEventListener("click", () => {
   if (audioPlayer.src) {
-    audioPlayer.play().catch(() => {});
+    audioPlayer.play().catch(() => {
+      setStatus("Unable to play audio automatically. Try interacting with the page.", true);
+    });
   }
 });
 
