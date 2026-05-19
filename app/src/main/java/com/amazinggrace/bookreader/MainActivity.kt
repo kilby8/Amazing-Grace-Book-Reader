@@ -1,9 +1,6 @@
 package com.amazinggrace.bookreader
 
-import android.Manifest
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -29,14 +26,11 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -56,34 +50,15 @@ private fun ReaderScreen() {
     val context = LocalContext.current
     val ocrManager = remember { OcrManager(context) }
     val ttsManager = remember { TtsManager(context) }
-    val scope = rememberCoroutineScope()
 
     var extractedText by remember { mutableStateOf("") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var statusMessage by remember { mutableStateOf("Select a screenshot to extract text.") }
 
-    val requiredReadPermission = remember {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            Manifest.permission.READ_MEDIA_IMAGES
-        } else {
-            Manifest.permission.READ_EXTERNAL_STORAGE
-        }
-    }
-
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
     ) { uri ->
         selectedImageUri = uri
-    }
-
-    val permissionLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.RequestPermission()
-    ) { granted ->
-        if (granted) {
-            imagePickerLauncher.launch("image/*")
-        } else {
-            statusMessage = "Gallery access permission is required to pick screenshots."
-        }
     }
 
     LaunchedEffect(selectedImageUri) {
@@ -117,18 +92,7 @@ private fun ReaderScreen() {
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         Button(
-            onClick = {
-                val isPermissionGranted = ContextCompat.checkSelfPermission(
-                    context,
-                    requiredReadPermission
-                ) == PackageManager.PERMISSION_GRANTED
-
-                if (isPermissionGranted || Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT) {
-                    imagePickerLauncher.launch("image/*")
-                } else {
-                    permissionLauncher.launch(requiredReadPermission)
-                }
-            }
+            onClick = { imagePickerLauncher.launch("image/*") }
         ) {
             Text(text = stringResource(R.string.pick_image))
         }
@@ -152,12 +116,10 @@ private fun ReaderScreen() {
             Button(
                 modifier = Modifier.weight(1f),
                 onClick = {
-                    scope.launch {
-                        if (ttsManager.playbackState == TtsManager.PlaybackState.PAUSED) {
-                            ttsManager.resume()
-                        } else {
-                            ttsManager.speak(extractedText)
-                        }
+                    if (ttsManager.playbackState == TtsManager.PlaybackState.PAUSED) {
+                        ttsManager.resume()
+                    } else {
+                        ttsManager.speak(extractedText)
                     }
                 }
             ) {

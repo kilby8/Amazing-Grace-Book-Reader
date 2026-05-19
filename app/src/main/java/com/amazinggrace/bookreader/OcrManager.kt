@@ -28,8 +28,12 @@ class OcrManager(private val context: Context) {
     private suspend fun recognize(image: InputImage): String = suspendCancellableCoroutine { continuation ->
         recognizer
             .process(image)
-            .addOnSuccessListener { continuation.resume(it.text) }
-            .addOnFailureListener { continuation.resumeWithException(it) }
+            .addOnSuccessListener {
+                if (continuation.isActive) continuation.resume(it.text)
+            }
+            .addOnFailureListener {
+                if (continuation.isActive) continuation.resumeWithException(it)
+            }
     }
 
     fun close() {
