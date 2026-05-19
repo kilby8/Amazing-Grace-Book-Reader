@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Amazing Grace Book Reader</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="container">
+      <h1>Amazing Grace Book Reader</h1>
+      <p class="subtitle">Upload a screenshot to extract and listen to book text.</p>
+
+      <section class="card">
+        <div id="drop-zone" class="drop-zone">
+          <input id="file-input" type="file" accept="image/*" />
+          <p>Drag & drop an image here, or click to select.</p>
+        </div>
+        <button id="upload-btn" type="button">Extract & Read</button>
+      </section>
+
+      <section class="card">
+        <h2>Extracted Text</h2>
+        <pre id="extracted-text">No text extracted yet.</pre>
+      </section>
+
+      <section class="card">
+        <h2>Audio Player</h2>
+        <audio id="audio-player" controls preload="none"></audio>
+        <div class="controls">
+          <button id="play-btn" type="button">Play</button>
+          <button id="pause-btn" type="button">Pause</button>
+          <button id="stop-btn" type="button">Stop</button>
+        </div>
+      </section>
+
+      <p id="status" class="status"></p>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>
