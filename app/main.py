@@ -67,7 +67,4 @@ async def get_audio(audio_id: UUID) -> FileResponse:
     if audio_path is None:
         raise HTTPException(status_code=404, detail="Audio file not found.")
 
-    if not audio_path.exists():
-        raise HTTPException(status_code=404, detail="Audio file not found.")
-
     return FileResponse(path=str(audio_path), media_type="audio/mpeg", filename=f"{audio_id}.mp3")
