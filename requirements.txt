@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+python-multipart
+pytesseract
+gTTS
+pillow
+pytest
+httpx

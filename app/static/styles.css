@@ -1,0 +1,64 @@
+:root {
+  color-scheme: light;
+  font-family: Arial, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #f5f7fb;
+  color: #1f2937;
+}
+
+.container {
+  max-width: 780px;
+  margin: 40px auto;
+  background: #ffffff;
+  border-radius: 12px;
+  padding: 24px;
+  box-shadow: 0 10px 30px rgba(31, 41, 55, 0.08);
+}
+
+.drop-zone {
+  border: 2px dashed #6b7280;
+  border-radius: 10px;
+  padding: 24px;
+  text-align: center;
+  background: #f9fafb;
+}
+
+.drop-zone.dragging {
+  border-color: #2563eb;
+  background: #eff6ff;
+}
+
+button {
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+
+button:hover {
+  background: #1d4ed8;
+}
+
+.text-output {
+  min-height: 120px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f3f4f6;
+  white-space: pre-wrap;
+}
+
+.audio-controls {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.status {
+  min-height: 20px;
+  color: #374151;
+}
