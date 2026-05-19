@@ -55,7 +55,7 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     fun pause() {
         if (playbackState == PlaybackState.PLAYING) {
-            // TextToSpeech has no native pause API; stop() is used and resume() restarts from the saved text.
+            // TextToSpeech has no native pause API; stop() is used and resume() restarts full playback.
             textToSpeech?.stop()
             playbackState = PlaybackState.PAUSED
         }
