@@ -116,10 +116,10 @@ private fun ReaderScreen() {
             Button(
                 modifier = Modifier.weight(1f),
                 onClick = {
-                    if (ttsManager.playbackState == TtsManager.PlaybackState.PAUSED) {
-                        ttsManager.resume()
-                    } else {
-                        ttsManager.speak(extractedText)
+                    when (ttsManager.playbackState) {
+                        TtsManager.PlaybackState.PAUSED -> ttsManager.resume()
+                        TtsManager.PlaybackState.PLAYING -> Unit
+                        else -> ttsManager.speak(extractedText)
                     }
                 }
             ) {
