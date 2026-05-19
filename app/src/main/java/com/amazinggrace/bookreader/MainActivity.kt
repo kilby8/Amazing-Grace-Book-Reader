@@ -116,6 +116,11 @@ private fun ReaderScreen() {
             Button(
                 modifier = Modifier.weight(1f),
                 onClick = {
+                    if (extractedText.isBlank()) {
+                        statusMessage = "No extracted text available to play."
+                        return@Button
+                    }
+
                     when (ttsManager.playbackState) {
                         TtsManager.PlaybackState.PAUSED -> ttsManager.resume()
                         TtsManager.PlaybackState.PLAYING -> Unit
