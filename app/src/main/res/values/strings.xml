@@ -18,4 +18,5 @@
     <string name="status_playback_stopped">Playback stopped.</string>
     <string name="status_playback_already_stopped">Playback is already stopped.</string>
     <string name="placeholder_extracted_text">Extracted text appears here.</string>
+    <string name="playback_note">Note: Pause followed by Play restarts from the beginning.</string>
 </resources>

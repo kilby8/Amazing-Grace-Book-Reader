@@ -171,6 +171,11 @@ private fun ReaderScreen() {
             }
         }
 
+        Text(
+            text = stringResource(R.string.playback_note),
+            style = MaterialTheme.typography.bodySmall
+        )
+
         Spacer(modifier = Modifier.height(4.dp))
     }
 }
