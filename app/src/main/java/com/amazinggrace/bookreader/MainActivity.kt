@@ -53,7 +53,7 @@ private fun ReaderScreen() {
 
     var extractedText by remember { mutableStateOf("") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
-    var statusMessage by remember { mutableStateOf("Select a screenshot to extract text.") }
+    var statusMessage by remember { mutableStateOf(context.getString(R.string.status_select_screenshot)) }
 
     val imagePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent()
@@ -63,17 +63,20 @@ private fun ReaderScreen() {
 
     LaunchedEffect(selectedImageUri) {
         selectedImageUri?.let { uri ->
-            statusMessage = "Running OCR..."
+            statusMessage = context.getString(R.string.status_running_ocr)
             runCatching {
                 extractedText = ocrManager.extractText(uri)
                 if (extractedText.isBlank()) {
-                    statusMessage = "No text found in the selected image."
+                    statusMessage = context.getString(R.string.status_no_text_found)
                 } else {
-                    statusMessage = "Text extracted successfully."
+                    statusMessage = context.getString(R.string.status_text_extracted)
                 }
             }.onFailure {
                 extractedText = ""
-                statusMessage = "OCR failed: ${it.localizedMessage ?: "Unknown error"}"
+                statusMessage = context.getString(
+                    R.string.status_ocr_failed,
+                    it.localizedMessage ?: "Unknown error"
+                )
             }
         }
     }
@@ -104,7 +107,7 @@ private fun ReaderScreen() {
         )
 
         Text(
-            text = if (extractedText.isBlank()) "Extracted text appears here." else extractedText,
+            text = if (extractedText.isBlank()) stringResource(R.string.placeholder_extracted_text) else extractedText,
             modifier = Modifier
                 .fillMaxWidth()
                 .weight(1f)
@@ -117,21 +120,21 @@ private fun ReaderScreen() {
                 modifier = Modifier.weight(1f),
                 onClick = {
                     if (extractedText.isBlank()) {
-                        statusMessage = "No extracted text available to play."
+                        statusMessage = context.getString(R.string.status_no_text_to_play)
                         return@Button
                     }
 
                     when (ttsManager.playbackState) {
                         TtsManager.PlaybackState.PAUSED -> {
                             ttsManager.resume()
-                            statusMessage = "Playback restarted from the beginning."
+                            statusMessage = context.getString(R.string.status_playback_restarted)
                         }
                         TtsManager.PlaybackState.PLAYING -> {
-                            statusMessage = "Already playing."
+                            statusMessage = context.getString(R.string.status_already_playing)
                         }
                         else -> {
                             ttsManager.speak(extractedText)
-                            statusMessage = "Playback started."
+                            statusMessage = context.getString(R.string.status_playback_started)
                         }
                     }
                 }
@@ -144,9 +147,9 @@ private fun ReaderScreen() {
                 onClick = {
                     if (ttsManager.playbackState == TtsManager.PlaybackState.PLAYING) {
                         ttsManager.pause()
-                        statusMessage = "Playback paused. Press Play to restart from the beginning."
+                        statusMessage = context.getString(R.string.status_playback_paused)
                     } else {
-                        statusMessage = "Nothing is currently playing."
+                        statusMessage = context.getString(R.string.status_nothing_playing)
                     }
                 }
             ) {
@@ -158,9 +161,9 @@ private fun ReaderScreen() {
                 onClick = {
                     if (ttsManager.playbackState != TtsManager.PlaybackState.STOPPED) {
                         ttsManager.stop()
-                        statusMessage = "Playback stopped."
+                        statusMessage = context.getString(R.string.status_playback_stopped)
                     } else {
-                        statusMessage = "Playback is already stopped."
+                        statusMessage = context.getString(R.string.status_playback_already_stopped)
                     }
                 }
             ) {
