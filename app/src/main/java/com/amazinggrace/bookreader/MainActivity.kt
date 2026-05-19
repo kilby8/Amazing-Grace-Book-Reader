@@ -122,9 +122,17 @@ private fun ReaderScreen() {
                     }
 
                     when (ttsManager.playbackState) {
-                        TtsManager.PlaybackState.PAUSED -> ttsManager.resume()
-                        TtsManager.PlaybackState.PLAYING -> Unit
-                        else -> ttsManager.speak(extractedText)
+                        TtsManager.PlaybackState.PAUSED -> {
+                            ttsManager.resume()
+                            statusMessage = "Playback resumed from the beginning."
+                        }
+                        TtsManager.PlaybackState.PLAYING -> {
+                            statusMessage = "Already playing."
+                        }
+                        else -> {
+                            ttsManager.speak(extractedText)
+                            statusMessage = "Playback started."
+                        }
                     }
                 }
             ) {
@@ -133,14 +141,28 @@ private fun ReaderScreen() {
 
             Button(
                 modifier = Modifier.weight(1f),
-                onClick = { ttsManager.pause() }
+                onClick = {
+                    if (ttsManager.playbackState == TtsManager.PlaybackState.PLAYING) {
+                        ttsManager.pause()
+                        statusMessage = "Playback paused. Resume restarts from the beginning."
+                    } else {
+                        statusMessage = "Nothing is currently playing."
+                    }
+                }
             ) {
                 Text(stringResource(R.string.pause))
             }
 
             Button(
                 modifier = Modifier.weight(1f),
-                onClick = { ttsManager.stop() }
+                onClick = {
+                    if (ttsManager.playbackState != TtsManager.PlaybackState.STOPPED) {
+                        ttsManager.stop()
+                        statusMessage = "Playback stopped."
+                    } else {
+                        statusMessage = "Playback is already stopped."
+                    }
+                }
             ) {
                 Text(stringResource(R.string.stop))
             }
