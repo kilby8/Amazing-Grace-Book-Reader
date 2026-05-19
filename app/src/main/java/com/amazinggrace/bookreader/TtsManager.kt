@@ -47,7 +47,6 @@ class TtsManager(context: Context) : TextToSpeech.OnInitListener {
 
     fun speak(text: String) {
         if (!isReady || text.isBlank()) return
-        if (playbackState == PlaybackState.PLAYING && currentText == text) return
         currentText = text
         textToSpeech?.speak(text, TextToSpeech.QUEUE_FLUSH, null, UTTERANCE_ID)
         playbackState = PlaybackState.PLAYING

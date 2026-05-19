@@ -159,7 +159,10 @@ private fun ReaderScreen() {
             Button(
                 modifier = Modifier.weight(1f),
                 onClick = {
-                    if (ttsManager.playbackState != TtsManager.PlaybackState.STOPPED) {
+                    if (
+                        ttsManager.playbackState == TtsManager.PlaybackState.PLAYING ||
+                        ttsManager.playbackState == TtsManager.PlaybackState.PAUSED
+                    ) {
                         ttsManager.stop()
                         statusMessage = context.getString(R.string.status_playback_stopped)
                     } else {
