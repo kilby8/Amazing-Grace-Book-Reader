@@ -88,7 +88,7 @@ function Get-StoredPid {
 if ($Kill) {
     $storedPid = Get-StoredPid
     if ($null -eq $storedPid) {
-        Write-Host "No .pocket-tts.pid found at $PidFile — nothing to kill."
+        Write-Host "No .pocket-tts.pid found at $PidFile - nothing to kill."
         if (Test-ServerReachable -Url $BaseUrl) {
             Write-Host "A server is reachable on $BaseUrl but its PID is unknown to this script."
             Write-Host "Stop it manually via Stop-Process, Task Manager, or run the launcher with -Kill after restarting it once."
@@ -99,7 +99,7 @@ if ($Kill) {
 
     $proc = Get-Process -Id $storedPid -ErrorAction SilentlyContinue
     if ($null -eq $proc) {
-        Write-Host "Stale PID $storedPid in $PidFile — process is not running. Cleaning up the pid file."
+        Write-Host "Stale PID $storedPid in $PidFile - process is not running. Cleaning up the pid file."
         Remove-Item -LiteralPath $PidFile -ErrorAction SilentlyContinue
         exit 0
     }
