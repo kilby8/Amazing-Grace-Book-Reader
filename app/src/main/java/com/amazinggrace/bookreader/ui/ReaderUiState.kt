@@ -9,5 +9,8 @@ data class ReaderUiState(
     val textScale: Float = 1.0f,
     val activeHighlightStart: Int? = null,
     val activeHighlightEndExclusive: Int? = null,
-    val historyItems: List<HistoryUiItem> = emptyList()
+    val historyItems: List<HistoryUiItem> = emptyList(),
+    val ttsEngine: String = "android",
+    val pocketTtsBaseUrl: String = "http://10.0.2.2:8765",
+    val pocketTtsVoice: String = "eve"
 )

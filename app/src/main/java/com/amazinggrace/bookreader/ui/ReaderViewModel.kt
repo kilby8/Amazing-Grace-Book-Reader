@@ -102,4 +102,16 @@ class ReaderViewModel : ViewModel() {
     fun setPlaybackHighlight(start: Int?, endExclusive: Int?) {
         setHighlightRange(start, endExclusive)
     }
+
+    fun setTtsEngine(engine: String) {
+        _uiState.update { it.copy(ttsEngine = engine) }
+    }
+
+    fun setPocketTtsBaseUrl(url: String) {
+        _uiState.update { it.copy(pocketTtsBaseUrl = url) }
+    }
+
+    fun setPocketTtsVoice(voice: String) {
+        _uiState.update { it.copy(pocketTtsVoice = voice) }
+    }
 }
