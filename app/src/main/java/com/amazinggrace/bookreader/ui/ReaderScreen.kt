@@ -9,14 +9,12 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.PictureAsPdf
-import androidx.compose.material.icons.filled.Share
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Divider
@@ -45,12 +43,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.amazinggrace.bookreader.R
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -244,7 +244,11 @@ fun ReaderScreen(
                         onClick = onPickPdf,
                         enabled = !isProcessing
                     ) {
-                        Icon(Icons.Filled.PictureAsPdf, contentDescription = null)
+                        Icon(
+                            painter = painterResource(R.drawable.ic_picture_as_pdf),
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
                         Spacer(Modifier.width(4.dp))
                         Text("Open PDF")
                     }
@@ -412,7 +416,7 @@ fun ReaderScreen(
                         enabled = parsedText.isNotBlank()
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.ContentCopy,
+                            painter = painterResource(R.drawable.ic_content_copy),
                             contentDescription = "Copy text"
                         )
                     }
@@ -421,7 +425,7 @@ fun ReaderScreen(
                         enabled = parsedText.isNotBlank()
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Share,
+                            painter = painterResource(R.drawable.ic_share),
                             contentDescription = "Share text"
                         )
                     }

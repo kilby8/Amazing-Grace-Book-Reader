@@ -72,7 +72,9 @@ dependencies {
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+    // Icons vendored as vector drawables in res/drawable/ to keep the
+    // dexed classpath small enough for d8 on Windows hosts.
+    // See res/drawable/ic_content_copy.xml, ic_share.xml, ic_picture_as_pdf.xml.
 
     implementation("com.google.android.gms:play-services-mlkit-text-recognition:19.0.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.8.1")
