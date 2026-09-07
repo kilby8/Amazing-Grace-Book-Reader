@@ -55,6 +55,23 @@ Commands:
 
 - Unit tests:
 	- app/src/test/java/com/amazinggrace/bookreader/tts/PlaybackSessionStateTest.kt
+	- app/src/test/java/com/amazinggrace/bookreader/tts/PocketTtsClientTest.kt
+	- app/src/test/java/com/amazinggrace/bookreader/domain/PdfTextExtractorTest.kt
+	- app/src/test/java/com/amazinggrace/bookreader/tts/TtsManagerFacadeTest.kt
 - Instrumentation tests:
 	- app/src/androidTest/java/com/amazinggrace/bookreader/history/ScanHistoryDaoTest.kt
 	- app/src/androidTest/java/com/amazinggrace/bookreader/data/ReaderPreferencesTest.kt
+
+## Drop PDF + Pocket TTS
+
+Optional opt-in mode that lets the app read a PDF aloud by sending the
+extracted text to a local [pocket-tts](https://github.com/kyutai-labs/pocket-tts)
+HTTP server (`POST /tts` → WAV → ExoPlayer). The built-in Android TTS path
+remains the default; no new user-side dependencies are required to skip this
+feature.
+
+To run it: launch the local server with `tools\launch-pocket-tts.ps1`, then
+in the app pick **Pocket TTS** in the TTS engine selector and tap **Open
+PDF**. Full step-by-step setup, troubleshooting, and the URL the app expects
+(including the emulator `10.0.2.2` mapping) live in
+[`DEV.md`](./DEV.md).
