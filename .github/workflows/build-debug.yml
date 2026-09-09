@@ -1,0 +1,52 @@
+name: build-debug-apk
+
+# Trigger:
+#   - on every push to feat/pdf-pocket-tts (so we always have a fresh APK)
+#   - on manual dispatch (for ad-hoc builds)
+#   - on tag push matching v* (auto-publish as a GitHub Release)
+on:
+  push:
+    branches:
+      - feat/pdf-pocket-tts
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Grant execute permission to gradlew
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        # No --no-daemon on the GitHub-hosted runner; the runner has plenty of RAM and
+        # the daemon speeds up the second job in any future matrix.
+        run: ./gradlew assembleDebug
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Create GitHub Release (tag pushes only)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: app/build/outputs/apk/debug/app-debug.apk
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
