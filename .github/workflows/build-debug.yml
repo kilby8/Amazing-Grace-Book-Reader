@@ -26,13 +26,22 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - name: Stop any leftover Gradle daemons from prior runs
+        # Daemons cached on the runner retain old JVM args; force a clean start.
+        run: ./gradlew --stop || true
+
       - name: Grant execute permission to gradlew
         run: chmod +x gradlew
 
+      # Force the daemon heap to 8 GB. The classpath is large (Compose + media3 +
+      # pdfbox-android + okhttp + ML Kit + Room + DataStore) and d8's forked
+      # worker needs room to merge it. gradle.properties carries the same
+      # setting, but the daemon may already be alive from a prior step with
+      # stale args; GRADLE_OPTS is the unambiguous override.
       - name: Build debug APK
-        # No --no-daemon on the GitHub-hosted runner; the runner has plenty of RAM and
-        # the daemon speeds up the second job in any future matrix.
-        run: ./gradlew assembleDebug
+        env:
+          GRADLE_OPTS: '-Xmx8g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1g'
+        run: ./gradlew assembleDebug --no-daemon
 
       - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
