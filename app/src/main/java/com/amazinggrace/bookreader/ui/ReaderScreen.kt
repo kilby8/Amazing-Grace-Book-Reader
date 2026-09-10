@@ -5,20 +5,27 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.Divider
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -34,17 +41,16 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.Modifier
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Share
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import com.amazinggrace.bookreader.R
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
@@ -63,8 +69,12 @@ fun ReaderScreen(
     activeHighlightStart: Int?,
     activeHighlightEndExclusive: Int?,
     historyItems: List<HistoryUiItem>,
+    ttsEngine: String,
+    pocketTtsBaseUrl: String,
+    pocketTtsVoice: String,
     onPickImage: () -> Unit,
     onTakePhoto: () -> Unit,
+    onPickPdf: () -> Unit,
     onHistoryItemClick: (HistoryUiItem) -> Unit,
     onDeleteHistoryItem: (HistoryUiItem) -> Unit,
     onRestoreHistoryItem: (HistoryUiItem) -> Unit,
@@ -75,6 +85,9 @@ fun ReaderScreen(
     onTextScaleChange: (Float) -> Unit,
     onSpeechRateChangeFinished: () -> Unit,
     onPitchChangeFinished: () -> Unit,
+    onTtsEngineChange: (String) -> Unit,
+    onPocketTtsBaseUrlChange: (String) -> Unit,
+    onPocketTtsVoiceChange: (String) -> Unit,
     onPlay: () -> Unit,
     onPause: () -> Unit,
     onStop: () -> Unit
@@ -226,6 +239,19 @@ fun ReaderScreen(
                     ) {
                         Text(if (isProcessing) "Processing..." else "Import Screenshot")
                     }
+                    OutlinedButton(
+                        modifier = Modifier.weight(1f),
+                        onClick = onPickPdf,
+                        enabled = !isProcessing
+                    ) {
+                        Icon(
+                            painter = painterResource(R.drawable.ic_picture_as_pdf),
+                            contentDescription = null,
+                            modifier = Modifier.size(20.dp)
+                        )
+                        Spacer(Modifier.width(4.dp))
+                        Text("Open PDF")
+                    }
                 }
 
                 Row(
@@ -319,6 +345,44 @@ fun ReaderScreen(
                             )
 
                             Text(
+                                text = "TTS Engine",
+                                style = MaterialTheme.typography.titleSmall
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FilterChip(
+                                    selected = ttsEngine == "android",
+                                    onClick = { onTtsEngineChange("android") },
+                                    label = { Text("Android") }
+                                )
+                                FilterChip(
+                                    selected = ttsEngine == "pocket_tts",
+                                    onClick = { onTtsEngineChange("pocket_tts") },
+                                    label = { Text("Pocket TTS") }
+                                )
+                            }
+                            if (ttsEngine == "pocket_tts") {
+                                OutlinedTextField(
+                                    value = pocketTtsBaseUrl,
+                                    onValueChange = onPocketTtsBaseUrlChange,
+                                    label = { Text("Server URL") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                OutlinedTextField(
+                                    value = pocketTtsVoice,
+                                    onValueChange = onPocketTtsVoiceChange,
+                                    label = { Text("Voice") },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Text(
+                                    text = "Pocket TTS has no word-level timing, so live highlight is off in this mode.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+
+                            Text(
                                 text = "Speech Rate: ${"%.2f".format(speechRate)}x",
                                 style = MaterialTheme.typography.bodyMedium
                             )
@@ -352,7 +416,7 @@ fun ReaderScreen(
                         enabled = parsedText.isNotBlank()
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.ContentCopy,
+                            painter = painterResource(R.drawable.ic_content_copy),
                             contentDescription = "Copy text"
                         )
                     }
@@ -361,7 +425,7 @@ fun ReaderScreen(
                         enabled = parsedText.isNotBlank()
                     ) {
                         Icon(
-                            imageVector = Icons.Filled.Share,
+                            painter = painterResource(R.drawable.ic_share),
                             contentDescription = "Share text"
                         )
                     }

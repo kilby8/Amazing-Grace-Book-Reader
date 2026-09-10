@@ -17,6 +17,7 @@ class ReaderActivityResultController(
     private val context: Context,
     private val cacheDir: File,
     private val onImageSelected: (Uri) -> Unit,
+    private val onPdfSelected: (Uri) -> Unit,
     private val onStatusMessage: (String) -> Unit
 ) {
     private var pendingCaptureUri: Uri? = null
@@ -64,6 +65,16 @@ class ReaderActivityResultController(
         onImageSelected(uri)
     }
 
+    private val pdfPickerLauncher = caller.registerForActivityResult(
+        ActivityResultContracts.OpenDocument()
+    ) { uri ->
+        if (uri == null) {
+            onStatusMessage("No PDF selected.")
+            return@registerForActivityResult
+        }
+        onPdfSelected(uri)
+    }
+
     fun requestMediaPermissions() {
         val permissions = mediaRuntimePermissions()
         if (permissions.isNotEmpty()) {
@@ -90,6 +101,10 @@ class ReaderActivityResultController(
         } else {
             cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
         }
+    }
+
+    fun launchPdfPicker() {
+        pdfPickerLauncher.launch(arrayOf("application/pdf"))
     }
 
     private fun mediaRuntimePermissions(): List<String> {

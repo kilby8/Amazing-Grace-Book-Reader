@@ -66,6 +66,24 @@ class ReaderUiCoordinator(
         }
     }
 
+    fun persistTtsEngine(engine: String) {
+        lifecycleOwner.lifecycleScope.launch {
+            sessionRepository.saveTtsEngine(engine)
+        }
+    }
+
+    fun persistPocketTtsBaseUrl(url: String) {
+        lifecycleOwner.lifecycleScope.launch {
+            sessionRepository.savePocketTtsBaseUrl(url)
+        }
+    }
+
+    fun persistPocketTtsVoice(voice: String) {
+        lifecycleOwner.lifecycleScope.launch {
+            sessionRepository.savePocketTtsVoice(voice)
+        }
+    }
+
     fun deleteHistoryItem(id: Long) {
         lifecycleOwner.lifecycleScope.launch {
             historyRepository.deleteById(id)
@@ -82,6 +100,9 @@ class ReaderUiCoordinator(
         val snapshot = sessionRepository.loadSnapshot()
         viewModel.setVoiceSettings(snapshot.speechRate, snapshot.pitch)
         viewModel.setTextScale(snapshot.textScale)
+        viewModel.setTtsEngine(snapshot.ttsEngine)
+        viewModel.setPocketTtsBaseUrl(snapshot.pocketTtsBaseUrl)
+        viewModel.setPocketTtsVoice(snapshot.pocketTtsVoice)
         playbackController.updateVoiceSettings(snapshot.speechRate, snapshot.pitch)
 
         if (snapshot.lastParsedText.isNotBlank()) {

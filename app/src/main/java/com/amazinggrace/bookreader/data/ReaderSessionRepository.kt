@@ -18,4 +18,16 @@ class ReaderSessionRepository(
     suspend fun saveTextScale(textScale: Float) {
         preferences.saveTextScale(textScale)
     }
+
+    suspend fun saveTtsEngine(engine: String) {
+        preferences.saveTtsEngine(engine)
+    }
+
+    suspend fun savePocketTtsBaseUrl(url: String) {
+        preferences.savePocketTtsBaseUrl(url)
+    }
+
+    suspend fun savePocketTtsVoice(voice: String) {
+        preferences.savePocketTtsVoice(voice)
+    }
 }

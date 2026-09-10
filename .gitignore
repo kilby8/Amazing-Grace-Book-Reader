@@ -1,18 +1,22 @@
-# Android/Gradle
-.gradle/
-build/
-**/build/
-local.properties
-
-# IDE
+# IDE / OS
 .idea/
+.vs/
 *.iml
 
-# OS
-.DS_Store
+# Gradle
+.gradle/
+build/
+local.properties
 
-# Kotlin
-*.class
+# Build outputs
+app/build/
+*/build/
 
-# Logs
-*.log
+# HPROF dumps from JVM crashes
+*.hprof
+
+# pocket-tts launcher state
+.pocket-tts.pid
+
+# Team / agent metadata (not source)
+TEAM-CHARTER.md
