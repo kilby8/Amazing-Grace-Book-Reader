@@ -4,6 +4,16 @@ plugins {
     id("org.jetbrains.kotlin.kapt")
 }
 
+// Bump R8's heap beyond its 512 MiB default. The full Compose + ML Kit +
+// Room + DataStore + OkHttp classpath OOMs R8 at the default — the resulting
+// thrash made the first CI release build run for 30+ min before being
+// cancelled. 4g fits inside the 8g GRADLE_OPTS the CI workflow sets and
+// keeps the minified release build under a minute on the same runner.
+// AGP reads this via `project.findProperty("android.r8.maxMemory")`, so
+// `setProperty` is the right entry point — the alternatives (`project.extra`
+// / `ExtensionAware.extraProperties`) don't show up under `findProperty`.
+project.setProperty("android.r8.maxMemory", "4g")
+
 android {
     namespace = "com.amazinggrace.bookreader"
     compileSdk = 35
