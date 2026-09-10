@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Grace Reader — PDF Audiobook</title>
+  <link rel="stylesheet" href="styles.css" />
+  <!-- empty favicon to suppress the 404 browsers ask for by default -->
+  <link rel="icon" href="data:," />
+</head>
+<body>
+  <header class="topbar">
+    <h1>Grace Reader</h1>
+    <p class="tagline">Drop a PDF. It reads itself to you.</p>
+  </header>
+
+  <main>
+    <section class="controls" aria-label="Engine and voice settings">
+      <div class="row">
+        <label for="engine">Engine</label>
+        <select id="engine" aria-label="TTS engine">
+          <option value="browser" selected>Browser TTS (no setup)</option>
+          <option value="pocket">Pocket TTS (local server)</option>
+        </select>
+      </div>
+
+      <div class="row" id="pocketRow" hidden>
+        <label for="pocketUrl">Pocket TTS URL</label>
+        <input
+          id="pocketUrl"
+          type="text"
+          spellcheck="false"
+          placeholder="http://127.0.0.1:8765"
+          value="http://127.0.0.1:8765"
+          aria-label="Pocket TTS base URL"
+        />
+        <button id="pocketHealth" type="button" class="ghost">Check</button>
+      </div>
+
+      <div class="row" id="pocketVoiceRow" hidden>
+        <label for="pocketVoice">Pocket voice</label>
+        <input
+          id="pocketVoice"
+          type="text"
+          spellcheck="false"
+          placeholder="eve"
+          value="eve"
+          list="pocketVoiceList"
+          aria-label="Pocket TTS voice id"
+        />
+        <datalist id="pocketVoiceList">
+          <option value="eve"></option>
+          <option value="alba"></option>
+          <option value="lola"></option>
+        </datalist>
+      </div>
+
+      <div class="row" id="browserVoiceRow">
+        <label for="browserVoice">Voice</label>
+        <select id="browserVoice" aria-label="Browser TTS voice"></select>
+        <button id="refreshVoices" type="button" class="ghost" title="Re-read voice list">↻</button>
+      </div>
+
+      <div class="row">
+        <label for="speed">Speed <span id="speedLabel">1.0×</span></label>
+        <input
+          id="speed"
+          type="range"
+          min="0.5" max="2.0" step="0.05" value="1.0"
+          aria-label="Playback speed"
+        />
+      </div>
+    </section>
+
+    <section
+      id="drop"
+      class="drop"
+      tabindex="0"
+      role="button"
+      aria-label="Drop a PDF here or click to choose a file"
+    >
+      <p class="drop-main">Drop a PDF here</p>
+      <p class="drop-sub">or <button id="pickFile" type="button" class="link">choose a file</button></p>
+      <input id="file" type="file" accept="application/pdf,.pdf" hidden />
+    </section>
+
+    <section class="status" aria-live="polite">
+      <span id="status">No PDF loaded.</span>
+    </section>
+
+    <section class="transport" aria-label="Playback controls">
+      <button id="prev" type="button" disabled>◀ Prev</button>
+      <button id="play" type="button" class="primary" disabled>Play</button>
+      <button id="pause" type="button" disabled>Pause</button>
+      <button id="stop" type="button" disabled>Stop</button>
+      <button id="next" type="button" disabled>Next ▶</button>
+      <span class="page-readout">
+        <label for="pageJump" class="sr-only">Jump to page</label>
+        Page <input id="pageJump" type="number" min="1" value="1" disabled /> /
+        <span id="pageCount">0</span>
+      </span>
+    </section>
+
+    <section class="text" aria-label="Extracted text">
+      <details>
+        <summary>Extracted text (read-only)</summary>
+        <pre id="textOut" aria-live="off"></pre>
+      </details>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <small>
+      Runs entirely in your browser. PDF text extraction via
+      <a href="https://mozilla.github.io/pdf.js/" target="_blank" rel="noopener">pdf.js</a>.
+      Pocket TTS is optional &mdash; <a href="https://github.com/kyutai/pocket-tts" target="_blank" rel="noopener">kyutai/pocket-tts</a>.
+    </small>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
