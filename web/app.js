@@ -439,6 +439,30 @@ function speakNextBrowserChunk() {
 }
 
 // ----- pocket-tts playback -----
+
+// Tiny silent WAV used to preserve the user-gesture activation window
+// across the async fetch to the TTS server. Without this, a slow fetch
+// can outlast the activation window and the subsequent audio.play() is
+// rejected with NotAllowedError. 0.05s mono 8-bit PCM, verified valid.
+const SILENT_WAV_DATA_URL =
+  "data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+
+function primeAudioActivation() {
+  try {
+    const a = new Audio(SILENT_WAV_DATA_URL);
+    a.volume = 0;
+    a.play().catch(() => {});
+  } catch (_) { /* best effort */ }
+}
+
+function describeMediaError(err) {
+  // HTMLMediaElement.error is a MediaError with a numeric .code; .message is
+  // empty in some browsers. Map the common codes to a readable name.
+  if (!err) return "unknown media error";
+  const codes = { 1: "MEDIA_ERR_ABORTED", 2: "MEDIA_ERR_NETWORK", 3: "MEDIA_ERR_DECODE", 4: "MEDIA_ERR_SRC_NOT_SUPPORTED" };
+  return codes[err.code] || `code ${err.code}`;
+}
+
 function playPocketFromCurrent() {
   const base = els.pocketUrl.value.trim().replace(/\/+$/, "");
   if (!base) {
@@ -459,6 +483,8 @@ function playPocketFromCurrent() {
   els.play.disabled = true;
   els.pause.disabled = false;
   els.stop.disabled = false;
+  // Preserve the user-activation window across the async fetch.
+  primeAudioActivation();
   playNextPocketChunk(base);
 }
 
@@ -515,15 +541,16 @@ function playNextPocketChunk(base) {
         playNextPocketChunk(base);
       };
       audio.onerror = () => {
+        const desc = describeMediaError(audio.error);
         URL.revokeObjectURL(url);
-        setStatus("Pocket TTS: audio playback error.", "err");
+        setStatus(`Pocket TTS audio error: ${desc}`, "err");
         state.isPlaying = false;
         els.play.disabled = !state.pdfDoc;
         els.pause.disabled = true;
       };
       audio.play().catch((e) => {
         URL.revokeObjectURL(url);
-        setStatus(`Pocket playback error: ${e.message}`, "err");
+        setStatus(`Pocket playback error: ${e.name}: ${e.message}`, "err");
         state.isPlaying = false;
         els.play.disabled = !state.pdfDoc;
         els.pause.disabled = true;
