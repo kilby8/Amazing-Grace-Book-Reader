@@ -8,6 +8,10 @@ Native Android app (Kotlin + Jetpack Compose) that:
 - Continues playback with screen locked via foreground playback service
 - Saves recent scans locally with Room history
 
+## Releases
+
+- [v0.1.0](https://github.com/kilby8/Amazing-Grace-Book-Reader/releases/tag/v0.1.0) — drop PDF + pocket-tts. Debug + release APKs attached.
+
 ## Key Features
 
 - Camera capture with full-resolution FileProvider flow

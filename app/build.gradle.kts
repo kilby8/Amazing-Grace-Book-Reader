@@ -23,7 +23,15 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            // R8 minify+shrink the release build. The full classpath (Compose +
+            // media3 + ML Kit + Room + DataStore + OkHttp + the rest) is too
+            // large for d8's 2g fork to merge unminified, so the debug APK OOMs
+            // in mergeExtDexDebug. R8 strips ~70% of unused classes/resources
+            // before dexing, so the release APK fits. assembleDebug still OOMs
+            // locally on memory-constrained dev machines — that's expected and
+            // is the reason this release build exists. See REPORT.md.
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -35,7 +43,9 @@ android {
     // material-icons-extended AAR is already close to that limit, and the new
     // media3 deps push the merged dex past it. dexOptions.javaMaxHeapSize
     // is honored by the legacy dx tool only, not d8. assembleDebug OOMs in the d8
-    // fork on memory-constrained dev machines; ./gradlew test is unaffected. See REPORT.
+    // fork on memory-constrained dev machines; ./gradlew test is unaffected.
+    // The release build escapes the ceiling by running R8 first, which trims
+    // the classpath before d8 sees it. See REPORT.md.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
