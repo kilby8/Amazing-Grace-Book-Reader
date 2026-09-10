@@ -70,9 +70,9 @@ Commands:
 
 Optional opt-in mode that lets the app read a PDF aloud by sending the
 extracted text to a local [pocket-tts](https://github.com/kyutai-labs/pocket-tts)
-HTTP server (`POST /tts` → WAV → ExoPlayer). The built-in Android TTS path
-remains the default; no new user-side dependencies are required to skip this
-feature.
+HTTP server (`POST /tts` → WAV → `android.media.MediaPlayer`). The built-in
+Android TTS path remains the default; no new user-side dependencies are
+required to skip this feature.
 
 To run it: launch the local server with `tools\launch-pocket-tts.ps1`, then
 in the app pick **Pocket TTS** in the TTS engine selector and tap **Open

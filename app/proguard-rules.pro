@@ -2,8 +2,8 @@
 #
 # Strategy: start minimal and only add explicit keep rules if R8 strips
 # something that breaks at runtime. Modern AARs (Compose, Room, DataStore,
-# Media3, ML Kit, OkHttp, Material Icons) ship their own consumer rules in
-# the META-INF/proguard/ directory of the AAR, so R8 picks them up
+# ML Kit, OkHttp, Material Icons) ship their own consumer rules in the
+# META-INF/proguard/ directory of the AAR, so R8 picks them up
 # automatically. The rules below are only for the entry points and Kotlin
 # metadata our own code relies on.
 

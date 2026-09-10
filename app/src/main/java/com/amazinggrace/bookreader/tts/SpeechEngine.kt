@@ -5,7 +5,7 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Abstraction over the text-to-speech playback layer. Two implementations exist in v1:
  * - [AndroidTtsEngine] (built-in android.speech.tts.TextToSpeech)
- * - [PocketTtsEngine] (HTTP POST to a local pocket-tts server + ExoPlayer playback)
+ * - [PocketTtsEngine] (HTTP POST to a local pocket-tts server + android.media.MediaPlayer)
  *
  * The TtsManager facade swaps engines at runtime via [TtsManager.setEngine]. Each engine
  * is responsible for the full lifecycle of one speak() call.

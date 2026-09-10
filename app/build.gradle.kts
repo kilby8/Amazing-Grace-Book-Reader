@@ -23,13 +23,14 @@ android {
 
     buildTypes {
         release {
-            // R8 minify+shrink the release build. The full classpath (Compose +
-            // media3 + ML Kit + Room + DataStore + OkHttp + the rest) is too
-            // large for d8's 2g fork to merge unminified, so the debug APK OOMs
-            // in mergeExtDexDebug. R8 strips ~70% of unused classes/resources
-            // before dexing, so the release APK fits. assembleDebug still OOMs
-            // locally on memory-constrained dev machines — that's expected and
-            // is the reason this release build exists. See REPORT.md.
+            // R8 minify+shrink the release build. The classpath (Compose + ML
+            // Kit + Room + DataStore + OkHttp + the rest) is too large for d8's
+            // 2g fork to merge unminified, so the debug APK OOMs in
+            // mergeExtDexDebug on memory-constrained dev machines. R8 strips
+            // ~70% of unused classes/resources before dexing, so the release
+            // APK fits. The previous media3-exoplayer deps were the second-
+            // largest contributor; they have been replaced with the platform
+            // android.media.MediaPlayer (no extra AAR).
             isMinifyEnabled = true
             isShrinkResources = true
             proguardFiles(
@@ -39,13 +40,13 @@ android {
         }
     }
 
-    // NOTE: AGP's d8 worker uses a forked JVM with a 2g heap. The pre-existing
-    // material-icons-extended AAR is already close to that limit, and the new
-    // media3 deps push the merged dex past it. dexOptions.javaMaxHeapSize
-    // is honored by the legacy dx tool only, not d8. assembleDebug OOMs in the d8
-    // fork on memory-constrained dev machines; ./gradlew test is unaffected.
-    // The release build escapes the ceiling by running R8 first, which trims
-    // the classpath before d8 sees it. See REPORT.md.
+    // NOTE: AGP's d8 worker uses a forked JVM with a 2g heap. Compose +
+    // material-icons-extended already push the merged dex close to that
+    // limit. dexOptions.javaMaxHeapSize is honored by the legacy dx tool
+    // only, not d8. assembleDebug OOMs in the d8 fork on memory-constrained
+    // dev machines; ./gradlew test is unaffected. The release build escapes
+    // the ceiling by running R8 first, which trims the classpath before d8
+    // sees it.
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
@@ -105,12 +106,15 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 
-    // Audio playback for pocket-tts
-    implementation("androidx.media3:media3-exoplayer:1.4.1")
-    implementation("androidx.media3:media3-common:1.4.1")
+    // Audio playback for pocket-tts is done with the platform android.media.MediaPlayer
+    // (API 1+). The previous androidx.media3:media3-exoplayer + media3-common deps
+    // added ~12 MB of AAR / 1000+ classes that pushed d8's 2 GB worker fork over its
+    // heap limit during assembleDebug. MediaPlayer is built into the platform so it
+    // adds no extra classes to the dexed classpath.
     // The compose-bom 2024.09.00 pulls in material-icons-extended which already
-    // stress-tests D8; the new media3 deps push the merged dex over the heap. Use
-    // a small icons subset for the few we need to keep the dexed footprint lean.
+    // stress-tests D8; the dropped media3 deps were the second-largest contributor.
+    // Icons remain vendored as vector drawables in res/drawable/ to keep the dexed
+    // footprint lean (see ic_content_copy.xml, ic_share.xml, ic_picture_as_pdf.xml).
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.google.truth:truth:1.4.4")
