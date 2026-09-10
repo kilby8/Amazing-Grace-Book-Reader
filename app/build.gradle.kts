@@ -31,9 +31,9 @@ android {
         }
     }
 
-    // NOTE: AGP 8.5's d8 worker uses a forked JVM with a 2g heap. The pre-existing
+    // NOTE: AGP's d8 worker uses a forked JVM with a 2g heap. The pre-existing
     // material-icons-extended AAR is already close to that limit, and the new
-    // media3 + pdfbox-android deps push the merged dex past it. dexOptions.javaMaxHeapSize
+    // media3 deps push the merged dex past it. dexOptions.javaMaxHeapSize
     // is honored by the legacy dx tool only, not d8. assembleDebug OOMs in the d8
     // fork on memory-constrained dev machines; ./gradlew test is unaffected. See REPORT.
 
@@ -84,8 +84,12 @@ dependencies {
     kapt("androidx.room:room-compiler:2.6.1")
     implementation("androidx.datastore:datastore-preferences:1.1.1")
 
-    // PDF text extraction
-    implementation("com.tom-roush:pdfbox-android:2.0.27.0")
+    // PDF text extraction is done via the platform's android.graphics.pdf.PdfRenderer
+    // (API 21+, available since this app's minSdk = 24) plus the existing
+    // OcrManager (ML Kit text recognition). The previous pdfbox-android AAR
+    // contributed ~6 MB / 1000+ classes that pushed the d8 merge step over
+    // its 2 GB worker heap; dropping it restores the assembleDebug path on
+    // memory-constrained dev machines. See PdfTextExtractor.
 
     // HTTP client (pocket-tts)
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
