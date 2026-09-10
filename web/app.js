@@ -1,7 +1,7 @@
-// Grace Reader — drop a PDF, hear it read aloud.
+// Grace Reader - drop a PDF, hear it read aloud.
 // pdf.js does the text extraction. Two playback engines:
 //   - browser: SpeechSynthesis (zero infra, immediate)
-//   - pocket:  POST to a local pocket-tts server, play the WAV back
+//   - pocket:  POST to a local pocket-tts server, decode + play via Web Audio
 "use strict";
 
 // pdf.js ships as an ES module from the CDN we pinned in index.html.
@@ -40,23 +40,40 @@ const els = {
 
 // ----- state -----
 const state = {
-  pdfDoc: null,           // pdf.js document proxy
-  pagesText: [],          // string per page, after extraction
-  currentPage: 1,         // 1-indexed
+  pdfDoc: null,
+  pagesText: [],
+  currentPage: 1,
   isPlaying: false,
   isPaused: false,
   // browser mode state
-  browserQueue: [],       // remaining chunks for the current page
-  browserIndex: 0,        // index into the current utterance within the page
+  browserQueue: [],
+  browserIndex: 0,
   // pocket mode state
-  pocketAudio: null,      // currently-playing HTMLAudioElement (or null)
-  pocketQueue: [],        // remaining chunks
+  pocketQueue: [],
   pocketIndex: 0,
-  abortPocket: false,     // set true to stop the in-flight fetch chain
+  abortPocket: false,
 };
 
-const MAX_CHARS_BROWSER = 220;  // SpeechSynthesis chokes on very long utterances
-const MAX_CHARS_POCKET = 600;   // pocket-tts handles longer, but chunks help latency
+const MAX_CHARS_BROWSER = 220;
+const MAX_CHARS_POCKET = 600;
+
+// ----- Web Audio API context (pocket-tts engine) -----
+// One shared AudioContext for the page. Decoding the WAV into an AudioBuffer
+// and playing through an AudioBufferSourceNode is more reliable than the
+// <audio> element + blob URL approach across browser engines (in-app
+// WebViews, headless Chrome, etc.) - the <audio> element's
+// MEDIA_ERR_SRC_NOT_SUPPORTED has too many ways to fire even with a valid
+// blob URL, including spurious fires on cleanup. Web Audio either decodes
+// or throws, and the source has a clean onended without an error channel.
+let audioCtx = null;
+let pocketSource = null;
+function getAudioCtx() {
+  if (!audioCtx) {
+    const Ctor = window.AudioContext || window.webkitAudioContext;
+    audioCtx = new Ctor();
+  }
+  return audioCtx;
+}
 
 // ----- status line -----
 function setStatus(msg, kind = "") {
@@ -74,7 +91,6 @@ function applyEngineVisibility() {
 
 els.engine.addEventListener("change", () => {
   applyEngineVisibility();
-  // If we were mid-playback on the other engine, restart from the same place.
   if (state.isPlaying || state.isPaused) {
     const restartFromPage = state.currentPage;
     stopInternal().then(() => {
@@ -85,11 +101,10 @@ els.engine.addEventListener("change", () => {
 });
 
 els.speed.addEventListener("input", () => {
-  els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}×`;
+  els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}\u00d7`;
   if (state.isPlaying) {
     if (els.engine.value === "browser") {
       // SpeechSynthesis has no per-utterance rate setter mid-flight in all browsers.
-      // Re-issuing the current chunk with the new rate is the simplest portable fix.
       const restartFromPage = state.currentPage;
       const remaining = state.browserQueue.slice(state.browserIndex);
       stopInternal().then(() => {
@@ -98,8 +113,10 @@ els.speed.addEventListener("input", () => {
         state.currentPage = restartFromPage;
         playFromCurrent();
       });
-    } else if (state.pocketAudio) {
-      state.pocketAudio.playbackRate = Number(els.speed.value);
+    } else if (pocketSource) {
+      // AudioBufferSourceNode supports live playbackRate changes without
+      // recreating the source.
+      pocketSource.playbackRate.value = Number(els.speed.value);
     }
   }
 });
@@ -115,7 +132,6 @@ function refreshBrowserVoices() {
     els.browserVoice.appendChild(opt);
     return;
   }
-  // Prefer English voices up top, then the rest.
   const en = voices.filter((v) => /^en[-_]/i.test(v.lang));
   const other = voices.filter((v) => !/^en[-_]/i.test(v.lang));
   for (const v of [...en, ...other]) {
@@ -126,7 +142,6 @@ function refreshBrowserVoices() {
   }
 }
 
-// Voices load asynchronously in Chrome; also re-fill when the engine changes.
 if ("speechSynthesis" in window) {
   refreshBrowserVoices();
   window.speechSynthesis.onvoiceschanged = refreshBrowserVoices;
@@ -140,7 +155,7 @@ els.pocketHealth.addEventListener("click", async () => {
     setStatus("Set a Pocket TTS URL first.", "err");
     return;
   }
-  setStatus(`Checking ${base}/health …`);
+  setStatus(`Checking ${base}/health \u2026`);
   try {
     const r = await fetch(`${base}/health`, { method: "GET" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -191,19 +206,17 @@ els.drop.addEventListener("drop", (e) => {
 // ----- PDF loading -----
 async function loadPdfFile(file) {
   if (!file) return;
-  setStatus(`Reading ${file.name} (${(file.size / 1024).toFixed(0)} KB) …`);
+  setStatus(`Reading ${file.name} (${(file.size / 1024).toFixed(0)} KB) \u2026`);
   try {
     const buf = await file.arrayBuffer();
-    setStatus("Parsing PDF …");
+    setStatus("Parsing PDF \u2026");
     const doc = await pdfjsLib.getDocument({ data: buf }).promise;
     state.pdfDoc = doc;
     state.pagesText = [];
     for (let i = 1; i <= doc.numPages; i++) {
-      setStatus(`Extracting text: page ${i} / ${doc.numPages} …`);
+      setStatus(`Extracting text: page ${i} / ${doc.numPages} \u2026`);
       const page = await doc.getPage(i);
       const tc = await page.getTextContent();
-      // pdf.js gives us an array of text items; join with spaces. Newlines are
-      // preserved where the source PDF had them, which reads better.
       const text = tc.items
         .map((it) => ("str" in it ? it.str : ""))
         .join(" ")
@@ -233,12 +246,8 @@ async function loadPdfFile(file) {
 }
 
 // ----- chunking -----
-// Split on sentence boundaries first; then pack sentences into chunks no
-// longer than maxChars. Empty strings get dropped.
 function chunkText(text, maxChars) {
   if (!text) return [];
-  // Naive but adequate sentence splitter: any of `.`, `!`, `?` followed by
-  // whitespace, or a hard newline.
   const parts = text
     .split(/(?<=[.!?])\s+|\n+/)
     .map((s) => s.trim())
@@ -247,7 +256,6 @@ function chunkText(text, maxChars) {
   let buf = "";
   for (const p of parts) {
     if (p.length > maxChars) {
-      // Oversized sentence — hard-split on word boundaries.
       if (buf) { out.push(buf); buf = ""; }
       const words = p.split(/\s+/);
       let wb = "";
@@ -323,8 +331,10 @@ function pauseInternal() {
   if (!state.isPlaying) return;
   if (els.engine.value === "browser") {
     window.speechSynthesis.pause();
-  } else if (state.pocketAudio) {
-    state.pocketAudio.pause();
+  } else if (audioCtx && audioCtx.state === "running") {
+    // Suspending the AudioContext pauses the active source at its
+    // current position. Resuming plays on from there.
+    try { audioCtx.suspend(); } catch (_) {}
   }
   state.isPaused = true;
   state.isPlaying = false;
@@ -340,15 +350,16 @@ function resumeInternal() {
     state.isPlaying = true;
     els.play.disabled = true;
     els.pause.disabled = false;
-  } else if (state.pocketAudio) {
-    state.pocketAudio.play().catch((e) => {
-      setStatus(`Pocket playback error: ${e.message}`, "err");
+  } else if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume().then(() => {
+      state.isPaused = false;
+      state.isPlaying = true;
+      els.play.disabled = true;
+      els.pause.disabled = false;
+    }).catch((e) => {
+      setStatus(`Pocket resume error: ${e.message}`, "err");
       stopInternal();
     });
-    state.isPaused = false;
-    state.isPlaying = true;
-    els.play.disabled = true;
-    els.pause.disabled = false;
   }
 }
 
@@ -359,14 +370,12 @@ async function stopInternal() {
     state.browserIndex = 0;
   } else {
     state.abortPocket = true;
-    if (state.pocketAudio) {
-      // Pause and drop our reference. Do NOT set src = "" — that fires
-      // MEDIA_ERR_SRC_NOT_SUPPORTED on the element which we then surface
-      // as a fake playback error. Just pausing + dropping the ref is
-      // enough; URL.revokeObjectURL from the chunk's onended/onerror will
-      // garbage-collect the blob when nothing else holds it.
-      try { state.pocketAudio.pause(); } catch (_) {}
-      state.pocketAudio = null;
+    if (pocketSource) {
+      try { pocketSource.stop(); } catch (_) {}
+      pocketSource = null;
+    }
+    if (audioCtx && audioCtx.state === "running") {
+      try { await audioCtx.suspend(); } catch (_) {}
     }
     state.pocketQueue = [];
     state.pocketIndex = 0;
@@ -383,7 +392,6 @@ function playBrowserFromCurrent() {
     setStatus("This browser does not support SpeechSynthesis.", "err");
     return;
   }
-  // Build the queue for the current page (only).
   const text = state.pagesText[state.currentPage - 1] || "";
   state.browserQueue = chunkText(text, MAX_CHARS_BROWSER);
   state.browserIndex = 0;
@@ -391,7 +399,7 @@ function playBrowserFromCurrent() {
     setStatus(`Page ${state.currentPage} has no extractable text.`, "err");
     return;
   }
-  setStatus(`Reading page ${state.currentPage} (browser TTS) …`);
+  setStatus(`Reading page ${state.currentPage} (browser TTS) \u2026`);
   state.isPlaying = true;
   state.isPaused = false;
   els.play.disabled = true;
@@ -403,7 +411,6 @@ function playBrowserFromCurrent() {
 function speakNextBrowserChunk() {
   if (!state.isPlaying || state.isPaused) return;
   if (state.browserIndex >= state.browserQueue.length) {
-    // End of page — auto-advance if there is a next page.
     if (state.pdfDoc && state.currentPage < state.pdfDoc.numPages) {
       state.currentPage += 1;
       els.pageJump.value = String(state.currentPage);
@@ -426,12 +433,11 @@ function speakNextBrowserChunk() {
     if (v) u.voice = v;
   }
   u.onend = () => {
-    if (!state.isPlaying) return;  // user stopped
+    if (!state.isPlaying) return;
     state.browserIndex += 1;
     speakNextBrowserChunk();
   };
   u.onerror = (e) => {
-    // 'interrupted'/'canceled' is expected when the user hits Stop.
     if (e.error && e.error !== "interrupted" && e.error !== "canceled") {
       setStatus(`Browser TTS error: ${e.error}`, "err");
     }
@@ -442,31 +448,7 @@ function speakNextBrowserChunk() {
   window.speechSynthesis.speak(u);
 }
 
-// ----- pocket-tts playback -----
-
-// Tiny silent WAV used to preserve the user-gesture activation window
-// across the async fetch to the TTS server. Without this, a slow fetch
-// can outlast the activation window and the subsequent audio.play() is
-// rejected with NotAllowedError. 0.05s mono 8-bit PCM, verified valid.
-const SILENT_WAV_DATA_URL =
-  "data:audio/wav;base64,UklGRrQBAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YZABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
-
-function primeAudioActivation() {
-  try {
-    const a = new Audio(SILENT_WAV_DATA_URL);
-    a.volume = 0;
-    a.play().catch(() => {});
-  } catch (_) { /* best effort */ }
-}
-
-function describeMediaError(err) {
-  // HTMLMediaElement.error is a MediaError with a numeric .code; .message is
-  // empty in some browsers. Map the common codes to a readable name.
-  if (!err) return "unknown media error";
-  const codes = { 1: "MEDIA_ERR_ABORTED", 2: "MEDIA_ERR_NETWORK", 3: "MEDIA_ERR_DECODE", 4: "MEDIA_ERR_SRC_NOT_SUPPORTED" };
-  return codes[err.code] || `code ${err.code}`;
-}
-
+// ----- pocket-tts playback (Web Audio API) -----
 function playPocketFromCurrent() {
   const base = els.pocketUrl.value.trim().replace(/\/+$/, "");
   if (!base) {
@@ -481,14 +463,17 @@ function playPocketFromCurrent() {
     setStatus(`Page ${state.currentPage} has no extractable text.`, "err");
     return;
   }
-  setStatus(`Reading page ${state.currentPage} via Pocket TTS …`);
+  setStatus(`Reading page ${state.currentPage} via Pocket TTS \u2026`);
   state.isPlaying = true;
   state.isPaused = false;
   els.play.disabled = true;
   els.pause.disabled = false;
   els.stop.disabled = false;
-  // Preserve the user-activation window across the async fetch.
-  primeAudioActivation();
+  // Web Audio API: create or resume the AudioContext synchronously in
+  // the click handler so the user-gesture activation is honored. The
+  // fetch to pocket-tts is async; resume() before fetch keeps the
+  // context out of the "suspended because no user gesture yet" state.
+  try { getAudioCtx().resume(); } catch (_) {}
   playNextPocketChunk(base);
 }
 
@@ -510,18 +495,13 @@ function playNextPocketChunk(base) {
   const chunk = state.pocketQueue[state.pocketIndex];
   const voice = els.pocketVoice.value.trim() || undefined;
   setStatus(
-    `Pocket TTS: chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} …`
+    `Pocket TTS: chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`
   );
 
-  // Build a multipart form. The server accepts `text` (required) and
-  // `voice_url` (optional built-in name like `eve`).
   const form = new FormData();
   form.append("text", chunk);
   if (voice) form.append("voice_url", voice);
 
-  // The wav comes back as a stream; we don't actually need to stream — we can
-  // wait for the full blob and play it as one Audio element. This is simpler
-  // and the chunks are already small enough to keep latency reasonable.
   fetch(`${base}/tts`, { method: "POST", body: form })
     .then((r) => {
       if (!r.ok) {
@@ -529,47 +509,45 @@ function playNextPocketChunk(base) {
           throw new Error(`HTTP ${r.status}: ${body || r.statusText}`);
         });
       }
-      return r.blob();
+      return r.arrayBuffer();
     })
-    .then((blob) => {
+    .then(async (arrayBuffer) => {
       if (state.abortPocket) return;
-      const url = URL.createObjectURL(blob);
-      const audio = new Audio(url);
-      audio.playbackRate = Number(els.speed.value) || 1.0;
-      state.pocketAudio = audio;
-      audio.onended = () => {
-        URL.revokeObjectURL(url);
-        state.pocketAudio = null;
+      // Web Audio API path: decode the WAV bytes into an AudioBuffer and
+      // play through an AudioBufferSourceNode. No <audio> element, no blob
+      // URL, no MEDIA_ERR_SRC_NOT_SUPPORTED on cleanup. If decodeAudioData
+      // succeeds, the bytes are playable; if it throws, we surface that
+      // as a real decode failure.
+      const ctx = getAudioCtx();
+      if (ctx.state === "suspended") {
+        try { await ctx.resume(); } catch (_) {}
+      }
+      const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+      if (state.abortPocket) return;
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.playbackRate.value = Number(els.speed.value) || 1.0;
+      source.connect(ctx.destination);
+      pocketSource = source;
+      source.onended = () => {
+        // If this source is no longer the active one (Stop, engine
+        // switch, or replaced by a newer chunk), don't surface cleanup
+        // as a failure or double-queue the next chunk.
+        if (pocketSource !== source) return;
+        pocketSource = null;
         if (state.abortPocket) return;
-        // Only advance if this audio is still the active one. Otherwise a
-        // user-initiated Stop or engine switch may have already moved on
-        // and we don't want to double-queue the next chunk.
-        if (state.pocketAudio !== audio) return;
         state.pocketIndex += 1;
         playNextPocketChunk(base);
       };
-      audio.onerror = () => {
-        // If this audio is no longer the active one (Stop, engine switch,
-        // or replaced by a newer chunk), don't surface the error — it's
-        // expected cleanup, not a real failure.
-        if (state.pocketAudio !== audio) {
-          URL.revokeObjectURL(url);
-          return;
-        }
-        const desc = describeMediaError(audio.error);
-        URL.revokeObjectURL(url);
-        setStatus(`Pocket TTS audio error: ${desc}`, "err");
-        state.isPlaying = false;
-        els.play.disabled = !state.pdfDoc;
-        els.pause.disabled = true;
-      };
-      audio.play().catch((e) => {
-        URL.revokeObjectURL(url);
-        setStatus(`Pocket playback error: ${e.name}: ${e.message}`, "err");
-        state.isPlaying = false;
-        els.play.disabled = !state.pdfDoc;
-        els.pause.disabled = true;
-      });
+      source.start(0);
+      state.isPlaying = true;
+      state.isPaused = false;
+      els.play.disabled = true;
+      els.pause.disabled = false;
+      els.stop.disabled = false;
+      setStatus(
+        `Pocket TTS: chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`
+      );
     })
     .catch((e) => {
       if (state.abortPocket) return;
@@ -582,5 +560,5 @@ function playNextPocketChunk(base) {
 
 // ----- initial UI state -----
 applyEngineVisibility();
-els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}×`;
+els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}\u00d7`;
 setStatus("Drop a PDF to start.");
