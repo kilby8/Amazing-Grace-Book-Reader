@@ -360,8 +360,12 @@ async function stopInternal() {
   } else {
     state.abortPocket = true;
     if (state.pocketAudio) {
+      // Pause and drop our reference. Do NOT set src = "" — that fires
+      // MEDIA_ERR_SRC_NOT_SUPPORTED on the element which we then surface
+      // as a fake playback error. Just pausing + dropping the ref is
+      // enough; URL.revokeObjectURL from the chunk's onended/onerror will
+      // garbage-collect the blob when nothing else holds it.
       try { state.pocketAudio.pause(); } catch (_) {}
-      state.pocketAudio.src = "";
       state.pocketAudio = null;
     }
     state.pocketQueue = [];
@@ -537,10 +541,21 @@ function playNextPocketChunk(base) {
         URL.revokeObjectURL(url);
         state.pocketAudio = null;
         if (state.abortPocket) return;
+        // Only advance if this audio is still the active one. Otherwise a
+        // user-initiated Stop or engine switch may have already moved on
+        // and we don't want to double-queue the next chunk.
+        if (state.pocketAudio !== audio) return;
         state.pocketIndex += 1;
         playNextPocketChunk(base);
       };
       audio.onerror = () => {
+        // If this audio is no longer the active one (Stop, engine switch,
+        // or replaced by a newer chunk), don't surface the error — it's
+        // expected cleanup, not a real failure.
+        if (state.pocketAudio !== audio) {
+          URL.revokeObjectURL(url);
+          return;
+        }
         const desc = describeMediaError(audio.error);
         URL.revokeObjectURL(url);
         setStatus(`Pocket TTS audio error: ${desc}`, "err");
