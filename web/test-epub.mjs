@@ -30,6 +30,15 @@ try {
   const jszipPresent = await page.evaluate(() => typeof window.JSZip !== "undefined");
   check("JSZip CDN script loaded", jszipPresent);
 
+  // Sign in as a fresh user
+  await page.waitForFunction(() => !document.getElementById("authScreen").hidden, { timeout: 10000 });
+  await page.click("#tabRegister");
+  await new Promise((r) => setTimeout(r, 200));
+  await page.type("#authUsername", `eu_${Date.now()}`);
+  await page.type("#authPassword", "epubpass1");
+  await page.click("#authSubmit");
+  await page.waitForFunction(() => !document.getElementById("libraryScreen").hidden, { timeout: 10000 });
+
   // Drop the EPUB
   const b64 = readFileSync(EPUB).toString("base64");
   await page.evaluate(async (b64) => {

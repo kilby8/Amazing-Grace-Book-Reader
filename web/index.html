@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Amazing Grace Reader — an audiobook for the books on your desk</title>
-  <meta name="description" content="Drop a PDF or EPUB, hear it read aloud. Browser TTS or a local Pocket TTS server." />
+  <meta name="description" content="Drop a PDF or EPUB, hear it read aloud. Save your library under a login." />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -13,190 +13,269 @@
   />
   <link rel="stylesheet" href="styles.css" />
   <link rel="icon" href="data:," />
-  <!-- JSZip for EPUB support (EPUBs are ZIP archives). -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
-  <a class="skip-link" href="#now-reading">Skip to reading</a>
+  <a class="skip-link" href="#main">Skip to content</a>
 
   <header class="topbar" role="banner">
     <div class="topbar-inner">
       <div class="brand">
-        <span class="brand-mark" aria-hidden="true">G</span>
+        <span class="brand-mark" aria-hidden="true">A</span>
         <div class="brand-text">
           <h1 class="brand-name">Amazing Grace Reader</h1>
           <p class="brand-tagline">An audiobook for the books on your desk.</p>
         </div>
       </div>
-      <nav class="topbar-meta" aria-label="Status">
-        <span id="status" class="status-pill" data-state="idle">No book loaded</span>
+      <nav class="topbar-meta" aria-label="Session">
+        <span id="status" class="status-pill" data-state="idle">Checking session…</span>
+        <button id="logoutBtn" type="button" class="btn btn-ghost btn-small" hidden>Sign out</button>
       </nav>
     </div>
   </header>
 
-  <main class="layout">
-    <!-- LEFT COLUMN: settings -->
-    <aside class="col col-settings" aria-label="Settings">
-      <section class="card card-settings">
-        <h2 class="card-heading">Voice</h2>
+  <main id="main" class="layout">
 
-        <div class="field">
-          <label for="engine" class="field-label">Engine</label>
-          <div class="select-wrap">
-            <select id="engine" class="field-control" aria-label="TTS engine">
-              <option value="browser" selected>Browser TTS &middot; zero setup</option>
-              <option value="pocket">Pocket TTS &middot; local server</option>
-            </select>
+    <!-- ============== LOGIN SCREEN ============== -->
+    <section id="authScreen" class="screen" aria-label="Sign in" hidden>
+      <div class="auth-card">
+        <h2 class="auth-heading">Sign in</h2>
+        <p class="auth-sub">Save your library and pick up where you left off.</p>
+
+        <div class="auth-tabs" role="tablist">
+          <button id="tabLogin" type="button" class="auth-tab auth-tab-active" role="tab" aria-selected="true">Sign in</button>
+          <button id="tabRegister" type="button" class="auth-tab" role="tab" aria-selected="false">Create account</button>
+        </div>
+
+        <form id="authForm" class="auth-form" novalidate>
+          <div class="field">
+            <label for="authUsername" class="field-label">Username</label>
+            <input
+              id="authUsername"
+              type="text"
+              class="field-control"
+              autocomplete="username"
+              spellcheck="false"
+              required
+              minlength="3"
+              maxlength="32"
+            />
+          </div>
+          <div class="field">
+            <label for="authPassword" class="field-label">Password</label>
+            <input
+              id="authPassword"
+              type="password"
+              class="field-control"
+              autocomplete="current-password"
+              required
+              minlength="6"
+            />
+          </div>
+          <p id="authError" class="auth-error" role="alert" aria-live="polite" hidden></p>
+          <button id="authSubmit" type="submit" class="btn btn-play btn-full">
+            <span id="authSubmitLabel">Sign in</span>
+          </button>
+          <p class="auth-hint">Local-only accounts. Stored in a SQLite file under <code>data/library.db</code> on this machine.</p>
+        </form>
+      </div>
+    </section>
+
+    <!-- ============== LIBRARY SCREEN ============== -->
+    <section id="libraryScreen" class="screen" aria-label="Your library" hidden>
+      <div class="library-inner">
+
+        <!-- Library header: greeting + actions -->
+        <div class="library-head">
+          <div>
+            <p class="library-eyebrow">Library</p>
+            <h2 class="library-greeting" id="libraryGreeting">Welcome back.</h2>
+          </div>
+          <div class="library-actions">
+            <button id="uploadPickBtn" type="button" class="btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              <span>Add book</span>
+            </button>
+            <input id="filePicker" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub" hidden />
           </div>
         </div>
 
-        <div class="field" id="pocketRow" hidden>
-          <label for="pocketUrl" class="field-label">Pocket TTS URL</label>
-          <div class="input-with-action">
+        <!-- Drop zone for adding a book -->
+        <section
+          id="drop"
+          class="drop drop-library"
+          tabindex="0"
+          role="button"
+          aria-label="Drop a PDF or EPUB here, or click to choose a file"
+        >
+          <div class="drop-inner">
+            <div class="drop-icon" aria-hidden="true">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+                <path d="M12 8v6" />
+                <path d="M9 11l3-3 3 3" />
+              </svg>
+            </div>
+            <p class="drop-headline">Drop a PDF or EPUB</p>
+            <p class="drop-sub">It joins your library and you can read it now.</p>
+          </div>
+        </section>
+
+        <!-- Book grid -->
+        <ul id="bookGrid" class="book-grid" aria-live="polite"></ul>
+        <div id="libraryEmpty" class="library-empty" hidden>
+          <p>Your library is empty.</p>
+          <p class="muted">Drop a PDF or EPUB above to get started.</p>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============== READER SCREEN ============== -->
+    <section id="readerScreen" class="screen screen-grid" aria-label="Reader" hidden>
+      <!-- LEFT COLUMN: settings -->
+      <aside class="col col-settings" aria-label="Settings">
+        <section class="card card-settings">
+          <h2 class="card-heading">Voice</h2>
+
+          <div class="field">
+            <label for="engine" class="field-label">Engine</label>
+            <div class="select-wrap">
+              <select id="engine" class="field-control" aria-label="TTS engine">
+                <option value="browser" selected>Browser TTS &middot; zero setup</option>
+                <option value="pocket">Pocket TTS &middot; local server</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field" id="pocketRow" hidden>
+            <label for="pocketUrl" class="field-label">Pocket TTS URL</label>
+            <div class="input-with-action">
+              <input
+                id="pocketUrl"
+                type="text"
+                class="field-control"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="http://127.0.0.1:8765"
+                value="http://127.0.0.1:8765"
+                aria-label="Pocket TTS base URL"
+              />
+              <button id="pocketHealth" type="button" class="btn btn-ghost">Check</button>
+            </div>
+          </div>
+
+          <div class="field" id="pocketVoiceRow" hidden>
+            <label for="pocketVoice" class="field-label">Pocket voice</label>
             <input
-              id="pocketUrl"
+              id="pocketVoice"
               type="text"
               class="field-control"
               spellcheck="false"
               autocomplete="off"
-              placeholder="http://127.0.0.1:8765"
-              value="http://127.0.0.1:8765"
-              aria-label="Pocket TTS base URL"
+              placeholder="eve"
+              value="eve"
+              list="pocketVoiceList"
+              aria-label="Pocket TTS voice id"
             />
-            <button id="pocketHealth" type="button" class="btn btn-ghost">Check</button>
+            <datalist id="pocketVoiceList">
+              <option value="eve"></option>
+              <option value="alba"></option>
+              <option value="lola"></option>
+            </datalist>
           </div>
-        </div>
 
-        <div class="field" id="pocketVoiceRow" hidden>
-          <label for="pocketVoice" class="field-label">Pocket voice</label>
-          <input
-            id="pocketVoice"
-            type="text"
-            class="field-control"
-            spellcheck="false"
-            autocomplete="off"
-            placeholder="eve"
-            value="eve"
-            list="pocketVoiceList"
-            aria-label="Pocket TTS voice id"
-          />
-          <datalist id="pocketVoiceList">
-            <option value="eve"></option>
-            <option value="alba"></option>
-            <option value="lola"></option>
-          </datalist>
-        </div>
-
-        <div class="field" id="browserVoiceRow">
-          <label for="browserVoice" class="field-label">Browser voice</label>
-          <div class="input-with-action">
-            <div class="select-wrap select-wrap-grow">
-              <select id="browserVoice" class="field-control" aria-label="Browser TTS voice"></select>
+          <div class="field" id="browserVoiceRow">
+            <label for="browserVoice" class="field-label">Browser voice</label>
+            <div class="input-with-action">
+              <div class="select-wrap select-wrap-grow">
+                <select id="browserVoice" class="field-control" aria-label="Browser TTS voice"></select>
+              </div>
+              <button id="refreshVoices" type="button" class="btn btn-ghost btn-icon" title="Re-read voice list" aria-label="Refresh voice list">&orarr;</button>
             </div>
-            <button id="refreshVoices" type="button" class="btn btn-ghost btn-icon" title="Re-read voice list" aria-label="Refresh voice list">&orarr;</button>
           </div>
-        </div>
-      </section>
+        </section>
 
-      <section class="card card-settings">
-        <h2 class="card-heading">Speed</h2>
-        <div class="field field-slider">
-          <input
-            id="speed"
-            type="range"
-            min="0.5" max="2.0" step="0.05" value="1.0"
-            aria-label="Playback speed"
-          />
-          <div class="speed-readout" aria-hidden="true">
-            <span id="speedLabel" class="speed-value">1.00&times;</span>
-          </div>
-        </div>
-      </section>
-    </aside>
-
-    <!-- RIGHT COLUMN: drop zone + now reading + transport + extracted text -->
-    <section class="col col-main" aria-label="Reader">
-      <!-- Drop zone: shown when nothing loaded; collapses to a "swap" affordance after load -->
-      <section
-        id="drop"
-        class="drop"
-        tabindex="0"
-        role="button"
-        aria-label="Drop a PDF or EPUB here, or click to choose a file"
-      >
-        <div class="drop-inner">
-          <div class="drop-icon" aria-hidden="true">
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
-              <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
-            </svg>
-          </div>
-          <p class="drop-headline">Drop a PDF or EPUB</p>
-          <p class="drop-sub">
-            <button id="pickFile" type="button" class="link">choose a file</button>
-            <span class="dot" aria-hidden="true">&middot;</span>
-            <span>or paste a URL later</span>
-          </p>
-        </div>
-        <input id="file" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub" hidden />
-      </section>
-
-      <!-- Now reading: prominent when a book is loaded -->
-      <section id="now-reading" class="now-reading" aria-label="Now reading" hidden>
-        <p class="nr-eyebrow">Now reading</p>
-        <h2 id="nrTitle" class="nr-title">Untitled</h2>
-        <div class="nr-meta">
-          <span class="nr-chapter">
-            <span class="nr-chapter-label">Chapter</span>
+        <section class="card card-settings">
+          <h2 class="card-heading">Speed</h2>
+          <div class="field field-slider">
             <input
-              id="pageJump"
-              class="nr-chapter-input"
-              type="number"
-              min="1"
-              value="1"
-              disabled
-              aria-label="Jump to chapter"
+              id="speed"
+              type="range"
+              min="0.5" max="2.0" step="0.05" value="1.0"
+              aria-label="Playback speed"
             />
-            <span class="nr-chapter-sep">of</span>
-            <span id="pageCount" class="nr-chapter-total">0</span>
-          </span>
-          <span id="pagePrint" class="nr-print" hidden></span>
-        </div>
-      </section>
+            <div class="speed-readout" aria-hidden="true">
+              <span id="speedLabel" class="speed-value">1.00&times;</span>
+            </div>
+          </div>
+        </section>
 
-      <!-- Transport -->
-      <section class="transport" aria-label="Playback controls">
-        <button id="prev" type="button" class="btn btn-transport" disabled aria-label="Previous chapter">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6V6zm3.5 6 8.5 6V6l-8.5 6z"/></svg>
+        <button id="backToLibrary" type="button" class="btn btn-ghost btn-back">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+          <span>Back to library</span>
         </button>
-        <button id="play" type="button" class="btn btn-play" disabled aria-label="Play">
-          <svg id="playIcon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7L8 5z"/></svg>
-          <span id="playLabel">Play</span>
-        </button>
-        <button id="pause" type="button" class="btn btn-transport" disabled aria-label="Pause">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
-        </button>
-        <button id="stop" type="button" class="btn btn-transport" disabled aria-label="Stop">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6V6z"/></svg>
-        </button>
-        <button id="next" type="button" class="btn btn-transport" disabled aria-label="Next chapter">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 6h2v12h-2V6zM6 6v12l8.5-6L6 6z"/></svg>
-        </button>
-      </section>
+      </aside>
 
-      <!-- Extracted text -->
-      <section class="text" aria-label="Extracted text">
-        <details>
-          <summary>View extracted text</summary>
-          <pre id="textOut" aria-live="off"></pre>
-        </details>
+      <!-- RIGHT COLUMN: now-reading + transport + extracted text -->
+      <section class="col col-main" aria-label="Reader content">
+
+        <section id="now-reading" class="now-reading" aria-label="Now reading" hidden>
+          <p class="nr-eyebrow">Now reading</p>
+          <h2 id="nrTitle" class="nr-title">Untitled</h2>
+          <div class="nr-meta">
+            <span class="nr-chapter">
+              <span class="nr-chapter-label">Chapter</span>
+              <input
+                id="pageJump"
+                class="nr-chapter-input"
+                type="number"
+                min="1"
+                value="1"
+                disabled
+                aria-label="Jump to chapter"
+              />
+              <span class="nr-chapter-sep">of</span>
+              <span id="pageCount" class="nr-chapter-total">0</span>
+            </span>
+            <span id="pagePrint" class="nr-print" hidden></span>
+          </div>
+        </section>
+
+        <section class="transport" aria-label="Playback controls">
+          <button id="prev" type="button" class="btn btn-transport" disabled aria-label="Previous chapter">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6V6zm3.5 6 8.5 6V6l-8.5 6z"/></svg>
+          </button>
+          <button id="play" type="button" class="btn btn-play" disabled aria-label="Play">
+            <svg id="playIcon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7L8 5z"/></svg>
+            <span id="playLabel">Play</span>
+          </button>
+          <button id="pause" type="button" class="btn btn-transport" disabled aria-label="Pause">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
+          </button>
+          <button id="stop" type="button" class="btn btn-transport" disabled aria-label="Stop">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6V6z"/></svg>
+          </button>
+          <button id="next" type="button" class="btn btn-transport" disabled aria-label="Next chapter">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 6h2v12h-2V6zM6 6v12l8.5-6L6 6z"/></svg>
+          </button>
+        </section>
+
+        <section class="text" aria-label="Extracted text">
+          <details>
+            <summary>View extracted text</summary>
+            <pre id="textOut" aria-live="off"></pre>
+          </details>
+        </section>
       </section>
     </section>
+
   </main>
 
   <footer class="foot" role="contentinfo">
     <p>
-      Runs in your browser. Text extraction via
+      Runs locally. Text extraction via
       <a href="https://mozilla.github.io/pdf.js/" target="_blank" rel="noopener">pdf.js</a>.
       Pocket TTS is optional &mdash;
       <a href="https://github.com/kyutai/pocket-tts" target="_blank" rel="noopener">kyutai/pocket-tts</a>.

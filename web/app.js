@@ -2,17 +2,53 @@
 // pdf.js does the text extraction. Two playback engines:
 //   - browser: SpeechSynthesis (zero infra, immediate)
 //   - pocket:  POST to a local pocket-tts server, decode + play via Web Audio
+//
+// App flow:
+//   auth -> library -> reader
+//   1. /api/me on load decides which screen to show
+//   2. Library shows the user's saved books; clicking one opens it
+//   3. Drop / file-picker on the library screen uploads + opens the new
+//      book in the reader in one motion
+//   4. "Back to library" returns to the grid; "Sign out" clears session
 "use strict";
 
 // pdf.js ships as an ES module from the CDN we pinned in index.html.
 import * as pdfjsLib from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs";
-// Worker is the same version, different file. Required for off-main-thread parsing.
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs";
 
 const $ = (id) => document.getElementById(id);
 
 const els = {
+  // Top-level screens
+  status: $("status"),
+  logoutBtn: $("logoutBtn"),
+  authScreen: $("authScreen"),
+  libraryScreen: $("libraryScreen"),
+  readerScreen: $("readerScreen"),
+
+  // Auth screen
+  tabLogin: $("tabLogin"),
+  tabRegister: $("tabRegister"),
+  authForm: $("authForm"),
+  authUsername: $("authUsername"),
+  authPassword: $("authPassword"),
+  authError: $("authError"),
+  authSubmit: $("authSubmit"),
+  authSubmitLabel: $("authSubmitLabel"),
+
+  // Library screen
+  libraryGreeting: $("libraryGreeting"),
+  uploadPickBtn: $("uploadPickBtn"),
+  filePicker: $("filePicker"),
+  drop: $("drop"),
+  pickFile: $("pickFile"),  // legacy - library uses filePicker; reader uses this; both share #drop
+  file: $("file"),           // reader-only hidden file input
+  bookGrid: $("bookGrid"),
+  libraryEmpty: $("libraryEmpty"),
+  backToLibrary: $("backToLibrary"),
+
+  // Reader screen
   engine: $("engine"),
   pocketRow: $("pocketRow"),
   pocketVoiceRow: $("pocketVoiceRow"),
@@ -24,10 +60,6 @@ const els = {
   refreshVoices: $("refreshVoices"),
   speed: $("speed"),
   speedLabel: $("speedLabel"),
-  drop: $("drop"),
-  pickFile: $("pickFile"),
-  file: $("file"),
-  status: $("status"),
   prev: $("prev"),
   play: $("play"),
   playLabel: $("playLabel"),
@@ -45,44 +77,369 @@ const els = {
 
 // ----- state -----
 const state = {
+  // Session
+  user: null,                    // { id, username } | null
+  screen: "loading",             // "loading" | "auth" | "library" | "reader"
+  // Library
+  books: [],                     // [{id,title,author,kind,size,added_at,last_opened_at}]
+  // Reader
   pdfDoc: null,
   pagesText: [],
   currentPage: 1,
   isPlaying: false,
   isPaused: false,
-  // browser mode state
   browserQueue: [],
   browserIndex: 0,
-  // pocket mode state
   pocketQueue: [],
   pocketIndex: 0,
-  pocketBuffers: [],       // pre-decoded AudioBuffer per chunk (gaps out the stutter)
-  pocketBase: "",          // base URL of the pocket-tts server
+  pocketBuffers: [],
+  pocketBase: "",
   abortPocket: false,
-  pocketPlayToken: 0,      // increments each time playPocketFromCurrent runs; in-flight
-                           // fetches capture this and bail if a newer play has started
-  // Per-chapter first print page number, parsed from the EPUB's
-  // page-list nav (EPUB 3 nav[epub:type=page-list]). Indexed by spine
-  // position (1-based). Null for PDFs (no equivalent metadata).
+  pocketPlayToken: 0,
   pagePrintNumbers: null,
-  // Per-chapter title. For EPUBs, parsed from the chapter XHTML <title>
-  // or first heading. For PDFs, falls back to the filename.
   chapterTitles: null,
-  // Book title (parsed from EPUB dc:title, or the filename).
   bookTitle: "",
+  // The id of the currently loaded book (so "back to library" + reopen works)
+  currentBookId: null,
 };
+
+// ----- API helpers -----
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    credentials: "same-origin",
+    headers: opts.body && !(opts.body instanceof FormData) ? { "Content-Type": "application/json" } : {},
+    ...opts,
+  });
+  let body = null;
+  try { body = await res.json(); } catch (_) { /* empty body */ }
+  if (!res.ok) {
+    const err = new Error((body && body.error) || `HTTP ${res.status}`);
+    err.status = res.status;
+    throw err;
+  }
+  return body;
+}
+
+function setStatus(msg, kind = "") {
+  els.status.textContent = msg;
+  els.status.dataset.state = kind || "idle";
+}
+
+// ----- Screen routing -----
+function showScreen(name) {
+  state.screen = name;
+  for (const s of [els.authScreen, els.libraryScreen, els.readerScreen]) {
+    if (!s) continue;
+    s.hidden = true;
+  }
+  if (name === "auth" && els.authScreen) els.authScreen.hidden = false;
+  if (name === "library" && els.libraryScreen) els.libraryScreen.hidden = false;
+  if (name === "reader" && els.readerScreen) els.readerScreen.hidden = false;
+  els.logoutBtn.hidden = !(state.user && (name === "library" || name === "reader"));
+}
+
+function setNowReadingTitle(bookTitle) {
+  els.nrTitle.textContent = bookTitle || "";
+  els.nowReading.hidden = !bookTitle;
+}
+
+function syncPlayButton() {
+  if (els.playLabel) els.playLabel.textContent = state.isPaused ? "Resume" : "Play";
+  if (els.playIcon) {
+    els.playIcon.innerHTML = '<path d="M8 5v14l11-7L8 5z"/>';
+  }
+}
+
+// ----- Init: check session and route -----
+async function init() {
+  setStatus("Checking session…", "busy");
+  try {
+    const me = await api("/api/me");
+    if (me.user) {
+      state.user = me.user;
+      await loadLibrary();
+      showScreen("library");
+      setStatus(`Signed in as ${me.user.username}`);
+    } else {
+      state.user = null;
+      showScreen("auth");
+      setStatus("Sign in to start");
+    }
+  } catch (e) {
+    setStatus(`Could not reach server: ${e.message}`, "err");
+    showScreen("auth");
+  }
+}
+
+// ----- Auth flow -----
+let authMode = "login"; // "login" | "register"
+
+function setAuthMode(mode) {
+  authMode = mode;
+  const isLogin = mode === "login";
+  els.tabLogin.classList.toggle("auth-tab-active", isLogin);
+  els.tabRegister.classList.toggle("auth-tab-active", !isLogin);
+  els.tabLogin.setAttribute("aria-selected", String(isLogin));
+  els.tabRegister.setAttribute("aria-selected", String(!isLogin));
+  els.authSubmitLabel.textContent = isLogin ? "Sign in" : "Create account";
+  els.authPassword.setAttribute("autocomplete", isLogin ? "current-password" : "new-password");
+  els.authError.hidden = true;
+  els.authError.textContent = "";
+}
+els.tabLogin.addEventListener("click", () => setAuthMode("login"));
+els.tabRegister.addEventListener("click", () => setAuthMode("register"));
+
+function showAuthError(msg) {
+  els.authError.textContent = msg;
+  els.authError.hidden = false;
+}
+
+els.authForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  els.authError.hidden = true;
+  const username = els.authUsername.value.trim();
+  const password = els.authPassword.value;
+  if (!username || !password) return showAuthError("Username and password are required.");
+  els.authSubmit.disabled = true;
+  els.authSubmitLabel.textContent = authMode === "login" ? "Signing in…" : "Creating account…";
+  setStatus(authMode === "login" ? "Signing in…" : "Creating account…", "busy");
+  try {
+    const path = authMode === "login" ? "/api/auth/login" : "/api/auth/register";
+    const { user } = await api(path, {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+    });
+    state.user = user;
+    await loadLibrary();
+    showScreen("library");
+    setStatus(`Welcome, ${user.username}`, "ok");
+    els.authPassword.value = "";
+  } catch (err) {
+    showAuthError(err.message);
+    setStatus(err.message, "err");
+    els.authSubmitLabel.textContent = authMode === "login" ? "Sign in" : "Create account";
+  } finally {
+    els.authSubmit.disabled = false;
+  }
+});
+
+els.logoutBtn.addEventListener("click", async () => {
+  try {
+    await api("/api/auth/logout", { method: "POST" });
+  } catch (_) { /* best-effort */ }
+  state.user = null;
+  state.books = [];
+  state.currentBookId = null;
+  showScreen("auth");
+  setStatus("Signed out");
+  els.authUsername.value = "";
+  els.authPassword.value = "";
+  setAuthMode("login");
+});
+
+// ----- Library -----
+async function loadLibrary() {
+  try {
+    const { books } = await api("/api/books");
+    state.books = books;
+    renderLibrary();
+  } catch (e) {
+    setStatus(`Could not load library: ${e.message}`, "err");
+  }
+}
+
+function renderLibrary() {
+  els.bookGrid.innerHTML = "";
+  els.libraryEmpty.hidden = state.books.length > 0;
+  // Greeting always reflects current book count (including empty)
+  if (state.user) {
+    if (state.books.length === 0) {
+      els.libraryGreeting.textContent = `Welcome, ${state.user.username}. Your library is empty.`;
+    } else if (state.books.length === 1) {
+      els.libraryGreeting.textContent = `Welcome back, ${state.user.username}. 1 book in your library.`;
+    } else {
+      els.libraryGreeting.textContent = `Welcome back, ${state.user.username}. ${state.books.length} books in your library.`;
+    }
+  }
+  if (state.books.length === 0) return;
+  for (const b of state.books) {
+    const li = document.createElement("li");
+    li.className = "book-card";
+    li.dataset.id = String(b.id);
+    const kindLabel = b.kind.toUpperCase();
+    const sizeKB = (b.size / 1024).toFixed(0);
+    const dateStr = new Date(b.added_at).toLocaleDateString();
+    li.innerHTML = `
+      <button class="book-card-open" data-id="${b.id}" aria-label="Open ${escapeHtml(b.title)}">
+        <div class="book-card-mark" aria-hidden="true">${escapeHtml(kindLabel)}</div>
+        <div class="book-card-body">
+          <h3 class="book-card-title">${escapeHtml(b.title)}</h3>
+          ${b.author ? `<p class="book-card-author">${escapeHtml(b.author)}</p>` : ""}
+          <p class="book-card-meta">${sizeKB} KB &middot; ${escapeHtml(dateStr)}</p>
+        </div>
+      </button>
+      <button class="book-card-del" data-id="${b.id}" aria-label="Delete ${escapeHtml(b.title)}" title="Remove from library">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+      </button>
+    `;
+    els.bookGrid.appendChild(li);
+  }
+  els.bookGrid.querySelectorAll(".book-card-open").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = Number(btn.dataset.id);
+      openBookFromLibrary(id);
+    });
+  });
+  els.bookGrid.querySelectorAll(".book-card-del").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      const book = state.books.find((b) => b.id === id);
+      if (!book) return;
+      const ok = confirm(`Remove "${book.title}" from your library? The file will be deleted from disk.`);
+      if (!ok) return;
+      try {
+        await api(`/api/books/${id}`, { method: "DELETE" });
+        state.books = state.books.filter((b) => b.id !== id);
+        renderLibrary();
+        setStatus(`Removed "${book.title}"`, "ok");
+      } catch (err) {
+        setStatus(`Could not remove: ${err.message}`, "err");
+      }
+    });
+  });
+}
+
+function escapeHtml(s) {
+  return String(s || "").replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c]));
+}
+
+// Upload (drag-drop OR picker) - same handler for both library and reader
+async function uploadFile(file) {
+  if (!state.user) {
+    setStatus("Sign in to save books", "err");
+    return;
+  }
+  const name = (file.name || "").toLowerCase();
+  if (!name.endsWith(".pdf") && !name.endsWith(".epub")) {
+    setStatus("Only PDF and EPUB files are supported", "err");
+    return;
+  }
+  setStatus(`Uploading ${file.name}…`, "busy");
+  try {
+    const form = new FormData();
+    form.append("file", file);
+    const { book } = await api("/api/books", { method: "POST", body: form });
+    setStatus(`Saved "${book.title}"`, "ok");
+    // Insert at top of list and open it
+    state.books = [book, ...state.books.filter((b) => b.id !== book.id)];
+    if (state.screen === "library") renderLibrary();
+    await openBookFromLibrary(book.id);
+  } catch (e) {
+    setStatus(`Upload failed: ${e.message}`, "err");
+  }
+}
+
+async function openBookFromLibrary(id) {
+  const book = state.books.find((b) => b.id === id);
+  if (!book) {
+    setStatus("Book not found in library", "err");
+    return;
+  }
+  setStatus(`Loading "${book.title}"…`, "busy");
+  try {
+    const res = await fetch(`/api/books/${id}/file`, { credentials: "same-origin" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const file = new File([blob], `${book.title}.${book.kind}`, { type: blob.type });
+    // Update last_opened_at locally so the library shows it as recent
+    book.last_opened_at = Date.now();
+    state.currentBookId = id;
+    showScreen("reader");
+    applyEngineVisibility();
+    syncPlayButton();
+    await loadDocument(file);
+  } catch (e) {
+    setStatus(`Could not open book: ${e.message}`, "err");
+  }
+}
+
+els.uploadPickBtn.addEventListener("click", () => els.filePicker.click());
+els.filePicker.addEventListener("change", (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (f) uploadFile(f);
+  e.target.value = "";
+});
+
+els.backToLibrary.addEventListener("click", async () => {
+  // Stop playback before leaving the reader
+  await stopInternal();
+  state.currentBookId = null;
+  state.pdfDoc = null;
+  state.pagesText = [];
+  state.bookTitle = "";
+  state.chapterTitles = null;
+  state.pagePrintNumbers = null;
+  setNowReadingTitle("");
+  els.textOut.textContent = "";
+  setCurrentPage(1);
+  showScreen("library");
+  await loadLibrary();
+  setStatus("Back to library");
+});
+
+// ----- Document loading (PDF or EPUB) - called by both library and direct drop -----
+async function loadDocument(file) {
+  if (!file) return;
+  const name = (file.name || "").toLowerCase();
+  if (name.endsWith(".epub") || file.type === "application/epub+zip") {
+    return loadEpubFile(file);
+  }
+  return loadPdfFile(file);
+}
+
+// Drop zone wiring - on library screen it's an upload zone; on reader
+// screen it's still a way to load a one-off without saving (but requires
+// being logged in to actually do anything useful).
+function wireDropzone() {
+  ["dragenter", "dragover"].forEach((ev) =>
+    els.drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      els.drop.classList.add("dragover");
+    })
+  );
+  ["dragleave", "drop"].forEach((ev) =>
+    els.drop.addEventListener(ev, (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      els.drop.classList.remove("dragover");
+    })
+  );
+  els.drop.addEventListener("drop", (e) => {
+    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) uploadFile(f);
+  });
+  // The library drop zone opens the picker on click/Enter; the reader
+  // drop zone does the same (the picker re-uses the library filePicker).
+  els.drop.addEventListener("click", () => els.filePicker.click());
+  els.drop.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      els.filePicker.click();
+    }
+  });
+}
+wireDropzone();
+
+// ----- The reader: PDF + EPUB extraction + playback -----
+// (logic preserved verbatim from the single-page version)
 
 const MAX_CHARS_BROWSER = 220;
 const MAX_CHARS_POCKET = 600;
 
-// ----- Web Audio API context (pocket-tts engine) -----
-// One shared AudioContext for the page. Decoding the WAV into an AudioBuffer
-// and playing through an AudioBufferSourceNode is more reliable than the
-// <audio> element + blob URL approach across browser engines (in-app
-// WebViews, headless Chrome, etc.) - the <audio> element's
-// MEDIA_ERR_SRC_NOT_SUPPORTED has too many ways to fire even with a valid
-// blob URL, including spurious fires on cleanup. Web Audio either decodes
-// or throws, and the source has a clean onended without an error channel.
 let audioCtx = null;
 let pocketSource = null;
 function getAudioCtx() {
@@ -91,203 +448,6 @@ function getAudioCtx() {
     audioCtx = new Ctor();
   }
   return audioCtx;
-}
-
-// ----- status line -----
-// Updates the topbar status pill. `kind` is one of:
-//   "" (idle/neutral) · "ok" (success) · "err" (error) · "busy" (animating)
-function setStatus(msg, kind = "") {
-  els.status.textContent = msg;
-  els.status.dataset.state = kind || "idle";
-}
-
-// ----- now-reading title -----
-// Set the book title shown above the chapter readout. Falls back to the
-// filename if no title was extracted from the document metadata.
-function setNowReadingTitle(bookTitle) {
-  els.nrTitle.textContent = bookTitle || "";
-  // Reveal/hide the now-reading section based on whether we have a title
-  els.nowReading.hidden = !bookTitle;
-}
-
-// ----- page-print badge (EPUB only) -----
-// For an EPUB that ships a <nav epub:type="page-list">, each spine item
-// is mapped to a print page number on load (state.pagePrintNumbers, 1-based
-// aligned with state.currentPage). The badge shows "p. N" next to the
-// chapter readout when the current chapter has one, and is hidden for
-// PDFs and for EPUB chapters with no print-page mapping.
-function updatePagePrintBadge() {
-  const pp = state.pagePrintNumbers && state.pagePrintNumbers[state.currentPage - 1];
-  if (pp) {
-    els.pagePrint.textContent = `p. ${pp}`;
-    els.pagePrint.hidden = false;
-  } else {
-    els.pagePrint.textContent = "";
-    els.pagePrint.hidden = true;
-  }
-}
-
-// setCurrentPage is the one place that touches state.currentPage + the
-// page-jump input during playback. Routing the print-page badge update
-// through here means the badge tracks the chapter readout no matter
-// how the page change was triggered (Play, Prev, Next, pageJump, or
-// auto-advance after the last chunk plays).
-function setCurrentPage(n) {
-  state.currentPage = n;
-  if (els.pageJump) els.pageJump.value = String(n);
-  updatePagePrintBadge();
-  // If we parsed a per-chapter title for this spine position, show it
-  // in the now-reading area; otherwise fall back to the book title.
-  const ct = state.chapterTitles && state.chapterTitles[n - 1];
-  if (ct) setNowReadingTitle(ct);
-  else if (state.bookTitle) setNowReadingTitle(state.bookTitle);
-}
-
-// Updates the Play button to reflect the current playback state. Same
-// button is reused for "Play" (stopped) and "Resume" (paused) - the
-// label and the play/pause icon swap so the affordance stays honest.
-function syncPlayButton() {
-  if (els.playLabel) els.playLabel.textContent = state.isPaused ? "Resume" : "Play";
-  if (els.playIcon) {
-    // Play button is hidden while actively playing (Pause is the action).
-    // Show triangle when stopped or paused.
-    const path = state.isPaused
-      ? '<path d="M8 5v14l11-7L8 5z"/>'
-      : '<path d="M8 5v14l11-7L8 5z"/>';
-    els.playIcon.innerHTML = path;
-  }
-}
-
-// ----- engine-visibility plumbing -----
-function applyEngineVisibility() {
-  const isPocket = els.engine.value === "pocket";
-  els.pocketRow.hidden = !isPocket;
-  els.pocketVoiceRow.hidden = !isPocket;
-  els.browserVoiceRow.hidden = isPocket;
-}
-
-els.engine.addEventListener("change", () => {
-  applyEngineVisibility();
-  if (state.isPlaying || state.isPaused) {
-    const restartFromPage = state.currentPage;
-    stopInternal().then(() => {
-      setCurrentPage(restartFromPage);
-      playFromCurrent();
-    });
-  }
-});
-
-els.speed.addEventListener("input", () => {
-  els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}\u00d7`;
-  if (state.isPlaying) {
-    if (els.engine.value === "browser") {
-      // SpeechSynthesis has no per-utterance rate setter mid-flight in all browsers.
-      const restartFromPage = state.currentPage;
-      const remaining = state.browserQueue.slice(state.browserIndex);
-      stopInternal().then(() => {
-        state.browserQueue = remaining;
-        state.browserIndex = 0;
-        setCurrentPage(restartFromPage);
-        playFromCurrent();
-      });
-    } else if (pocketSource) {
-      // AudioBufferSourceNode supports live playbackRate changes without
-      // recreating the source.
-      pocketSource.playbackRate.value = Number(els.speed.value);
-    }
-  }
-});
-
-// ----- browser voices -----
-function refreshBrowserVoices() {
-  const voices = window.speechSynthesis.getVoices() || [];
-  els.browserVoice.innerHTML = "";
-  if (voices.length === 0) {
-    const opt = document.createElement("option");
-    opt.value = "";
-    opt.textContent = "(no voices available)";
-    els.browserVoice.appendChild(opt);
-    return;
-  }
-  const en = voices.filter((v) => /^en[-_]/i.test(v.lang));
-  const other = voices.filter((v) => !/^en[-_]/i.test(v.lang));
-  for (const v of [...en, ...other]) {
-    const opt = document.createElement("option");
-    opt.value = v.name;
-    opt.textContent = `${v.name} (${v.lang})`;
-    els.browserVoice.appendChild(opt);
-  }
-}
-
-if ("speechSynthesis" in window) {
-  refreshBrowserVoices();
-  window.speechSynthesis.onvoiceschanged = refreshBrowserVoices;
-}
-els.refreshVoices.addEventListener("click", refreshBrowserVoices);
-
-// ----- pocket-tts health check -----
-els.pocketHealth.addEventListener("click", async () => {
-  const base = els.pocketUrl.value.trim().replace(/\/+$/, "");
-  if (!base) {
-    setStatus("Set a Pocket TTS URL first.", "err");
-    return;
-  }
-  setStatus(`Checking ${base}/health \u2026`);
-  try {
-    const r = await fetch(`${base}/health`, { method: "GET" });
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    const j = await r.json().catch(() => ({}));
-    setStatus(`Pocket TTS OK: ${j.status ?? "healthy"}`, "ok");
-  } catch (e) {
-    setStatus(`Pocket TTS unreachable: ${e.message}`, "err");
-  }
-});
-
-// ----- file picking -----
-els.pickFile.addEventListener("click", (e) => {
-  e.stopPropagation();
-  els.file.click();
-});
-els.drop.addEventListener("click", () => els.file.click());
-els.drop.addEventListener("keydown", (e) => {
-  if (e.key === "Enter" || e.key === " ") {
-    e.preventDefault();
-    els.file.click();
-  }
-});
-els.file.addEventListener("change", (e) => {
-  const f = e.target.files && e.target.files[0];
-  if (f) loadDocument(f);
-});
-
-// ----- drag and drop -----
-["dragenter", "dragover"].forEach((ev) =>
-  els.drop.addEventListener(ev, (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    els.drop.classList.add("dragover");
-  })
-);
-["dragleave", "drop"].forEach((ev) =>
-  els.drop.addEventListener(ev, (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    els.drop.classList.remove("dragover");
-  })
-);
-els.drop.addEventListener("drop", (e) => {
-  const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) loadDocument(f);
-});
-
-// ----- document loading (PDF or EPUB) -----
-async function loadDocument(file) {
-  if (!file) return;
-  const name = (file.name || "").toLowerCase();
-  if (name.endsWith(".epub") || file.type === "application/epub+zip") {
-    return loadEpubFile(file);
-  }
-  return loadPdfFile(file);
 }
 
 async function loadPdfFile(file) {
@@ -299,8 +459,8 @@ async function loadPdfFile(file) {
     const doc = await pdfjsLib.getDocument({ data: buf }).promise;
     state.pdfDoc = doc;
     state.pagesText = [];
-    state.pagePrintNumbers = null;  // PDFs have no equivalent of the EPUB page-list
-    state.chapterTitles = null;     // PDF chapter titles aren't parsed
+    state.pagePrintNumbers = null;
+    state.chapterTitles = null;
     for (let i = 1; i <= doc.numPages; i++) {
       setStatus(`Extracting text: page ${i} / ${doc.numPages} \u2026`, "busy");
       const page = await doc.getPage(i);
@@ -313,14 +473,13 @@ async function loadPdfFile(file) {
         .trim();
       state.pagesText.push(text);
     }
-    // Try to get a title from PDF metadata; fall back to the filename
     let bookTitle = file.name.replace(/\.pdf$/i, "");
     try {
       const meta = await doc.getMetadata();
       if (meta && meta.info && typeof meta.info.Title === "string" && meta.info.Title.trim()) {
         bookTitle = meta.info.Title.trim();
       }
-    } catch (_) { /* metadata optional */ }
+    } catch (_) {}
     state.bookTitle = bookTitle;
     setNowReadingTitle(bookTitle);
     setCurrentPage(1);
@@ -342,21 +501,15 @@ async function loadPdfFile(file) {
   }
 }
 
-// EPUB: an EPUB is a ZIP archive. The relevant files inside are:
-//   - META-INF/container.xml: points at the OPF
-//   - OEBPS/<name>.opf: manifest + spine (reading order)
-//   - OEBPS/xhtml/<chapter>.xhtml: each chapter as XHTML
-// We use JSZip (loaded via <script>) to unzip, the browser's DOMParser
-// to parse XML/XHTML, and treat each spine item as a "page" in the app.
 async function loadEpubFile(file) {
   if (!file) return;
   if (typeof JSZip === "undefined") {
     setStatus("EPUB support needs JSZip; reload the page to load it.", "err");
     return;
   }
-  setStatus(`Reading ${file.name} (${(file.size / 1024).toFixed(0)} KB) \u2026`);
+  setStatus(`Reading ${file.name} (${(file.size / 1024).toFixed(0)} KB) \u2026`, "busy");
   try {
-    setStatus("Unzipping EPUB \u2026");
+    setStatus("Unzipping EPUB \u2026", "busy");
     const buf = await file.arrayBuffer();
     const zip = await JSZip.loadAsync(buf);
     const container = await zip.file("META-INF/container.xml").async("string");
@@ -365,12 +518,7 @@ async function loadEpubFile(file) {
     if (!opfPath) throw new Error("EPUB container.xml has no rootfile full-path");
     const opfText = await zip.file(opfPath).async("string");
     const opfDoc = new DOMParser().parseFromString(opfText, "application/xml");
-    // OPF relative hrefs are resolved against the directory containing the
-    // OPF. Computed once and reused for the nav doc and every spine item.
     const opfDir = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
-    // Parse the EPUB 3 page-list nav (if present) into a map of href basename
-    // -> first print page number. Falls back to no print-page numbers if the
-    // nav document has no page-list.
     let pageNumberByHref = {};
     const navItem = opfDoc.querySelector('manifest > item[properties*="nav"]');
     if (navItem) {
@@ -380,9 +528,6 @@ async function loadEpubFile(file) {
       if (navEntry) {
         const navText = await navEntry.async("string");
         const navDoc = new DOMParser().parseFromString(navText, "application/xhtml+xml");
-        // Find the page-list nav regardless of how the parser exposed the
-        // epub: namespace. The simplest is to iterate every <nav> and look
-        // for the type attribute by local name.
         let pl = null;
         navDoc.querySelectorAll("nav").forEach((n) => {
           if (pl) return;
@@ -395,9 +540,6 @@ async function loadEpubFile(file) {
             const href = a.getAttribute("href") || "";
             const fullFile = href.split("#")[0];
             if (!fullFile) return;
-            // Index by basename so it matches the spine lookup below
-            // (spine items carry a path-relative href, e.g. xhtml/..._r1.xhtml,
-            // and we only need the basename for the chapter->page map).
             const base = fullFile.split("/").pop();
             const label = (a.textContent || "").trim();
             if (!label) return;
@@ -406,28 +548,22 @@ async function loadEpubFile(file) {
         }
       }
     }
-    // Build id -> href from the manifest.
     const items = {};
     opfDoc.querySelectorAll("manifest > item").forEach((el) => {
       const id = el.getAttribute("id");
       const href = el.getAttribute("href");
       const props = el.getAttribute("properties") || "";
-      if (id && href && props.indexOf("nav") === -1) {
-        items[id] = href;
-      }
+      if (id && href && props.indexOf("nav") === -1) items[id] = href;
     });
-    // Spine is the reading order.
     const spineIds = Array.from(opfDoc.querySelectorAll("spine > itemref"))
       .map((el) => el.getAttribute("idref"))
       .filter((id) => id && items[id]);
     if (spineIds.length === 0) throw new Error("EPUB spine is empty");
-    // Map each spine position to its print page number (or null).
     const pagePrintNumbers = spineIds.map((id) => {
       const href = items[id] || "";
-      const base = href.split("/").pop();  // basename of the XHTML file
+      const base = href.split("/").pop();
       return pageNumberByHref[base] || null;
     });
-    // For each spine item, read the XHTML and extract text + chapter title.
     const pages = [];
     const chapterTitles = [];
     for (let i = 0; i < spineIds.length; i++) {
@@ -443,32 +579,27 @@ async function loadEpubFile(file) {
       }
       const xhtml = await entry.async("string");
       const xhtmlDoc = new DOMParser().parseFromString(xhtml, "application/xhtml+xml");
-      // Walk the text nodes, ignoring <script>/<style>. Insert paragraph
-      // breaks at block-level elements so the chunker sees natural
-      // sentence boundaries.
       const SKIP = new Set(["SCRIPT", "STYLE", "HEAD"]);
       let text = "";
       const walk = (node) => {
         if (!node) return;
-        if (node.nodeType === 1 /* Element */) {
+        if (node.nodeType === 1) {
           if (SKIP.has(node.tagName)) return;
           const isBlock = /^(P|DIV|SECTION|ARTICLE|HEADER|FOOTER|H[1-6]|BR|LI|BLOCKQUOTE|HR)$/i.test(node.tagName);
           if (isBlock && text && !text.endsWith("\n")) text += "\n";
           for (const child of node.childNodes) walk(child);
           if (isBlock && !text.endsWith("\n")) text += "\n";
-        } else if (node.nodeType === 3 /* Text */) {
+        } else if (node.nodeType === 3) {
           text += node.nodeValue;
         }
       };
       walk(xhtmlDoc.body || xhtmlDoc.documentElement);
-      // Strip leftover tags, normalize whitespace, keep paragraph breaks.
       text = text
         .replace(/<[^>]+>/g, "")
         .replace(/[ \t]+/g, " ")
         .replace(/\s*\n\s*\n\s*/g, "\n\n")
         .replace(/[ \t]+\n/g, "\n")
         .trim();
-      // Chapter title: prefer <title>, fall back to first h1/h2/h3.
       let chapterTitle = "";
       const titleEl = xhtmlDoc.querySelector("title");
       if (titleEl && titleEl.textContent.trim()) {
@@ -489,7 +620,6 @@ async function loadEpubFile(file) {
     state.pagesText = pages;
     state.pagePrintNumbers = pagePrintNumbers;
     state.chapterTitles = chapterTitles;
-    // Book title: prefer EPUB dc:title, fall back to filename without .epub
     const titleMatch = opfText.match(/<dc:title[^>]*>([^<]+)<\/dc:title>/);
     const bookTitle = titleMatch
       ? titleMatch[1].trim()
@@ -555,6 +685,109 @@ function chunkText(text, maxChars) {
   return out;
 }
 
+// ----- print-page badge + chapter title -----
+function updatePagePrintBadge() {
+  const pp = state.pagePrintNumbers && state.pagePrintNumbers[state.currentPage - 1];
+  if (pp) {
+    els.pagePrint.textContent = `p. ${pp}`;
+    els.pagePrint.hidden = false;
+  } else {
+    els.pagePrint.textContent = "";
+    els.pagePrint.hidden = true;
+  }
+}
+
+function setCurrentPage(n) {
+  state.currentPage = n;
+  if (els.pageJump) els.pageJump.value = String(n);
+  updatePagePrintBadge();
+  const ct = state.chapterTitles && state.chapterTitles[n - 1];
+  if (ct) setNowReadingTitle(ct);
+  else if (state.bookTitle) setNowReadingTitle(state.bookTitle);
+}
+
+// ----- engine + speed -----
+function applyEngineVisibility() {
+  const isPocket = els.engine.value === "pocket";
+  els.pocketRow.hidden = !isPocket;
+  els.pocketVoiceRow.hidden = !isPocket;
+  els.browserVoiceRow.hidden = isPocket;
+}
+
+els.engine.addEventListener("change", () => {
+  applyEngineVisibility();
+  if (state.isPlaying || state.isPaused) {
+    const restartFromPage = state.currentPage;
+    stopInternal().then(() => {
+      setCurrentPage(restartFromPage);
+      playFromCurrent();
+    });
+  }
+});
+
+els.speed.addEventListener("input", () => {
+  els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}\u00d7`;
+  if (state.isPlaying) {
+    if (els.engine.value === "browser") {
+      const restartFromPage = state.currentPage;
+      const remaining = state.browserQueue.slice(state.browserIndex);
+      stopInternal().then(() => {
+        state.browserQueue = remaining;
+        state.browserIndex = 0;
+        setCurrentPage(restartFromPage);
+        playFromCurrent();
+      });
+    } else if (pocketSource) {
+      pocketSource.playbackRate.value = Number(els.speed.value);
+    }
+  }
+});
+
+// ----- browser voices -----
+function refreshBrowserVoices() {
+  const voices = window.speechSynthesis.getVoices() || [];
+  els.browserVoice.innerHTML = "";
+  if (voices.length === 0) {
+    const opt = document.createElement("option");
+    opt.value = "";
+    opt.textContent = "(no voices available)";
+    els.browserVoice.appendChild(opt);
+    return;
+  }
+  const en = voices.filter((v) => /^en[-_]/i.test(v.lang));
+  const other = voices.filter((v) => !/^en[-_]/i.test(v.lang));
+  for (const v of [...en, ...other]) {
+    const opt = document.createElement("option");
+    opt.value = v.name;
+    opt.textContent = `${v.name} (${v.lang})`;
+    els.browserVoice.appendChild(opt);
+  }
+}
+
+if ("speechSynthesis" in window) {
+  refreshBrowserVoices();
+  window.speechSynthesis.onvoiceschanged = refreshBrowserVoices;
+}
+els.refreshVoices.addEventListener("click", refreshBrowserVoices);
+
+// ----- pocket-tts health -----
+els.pocketHealth.addEventListener("click", async () => {
+  const base = els.pocketUrl.value.trim().replace(/\/+$/, "");
+  if (!base) {
+    setStatus("Set a Pocket TTS URL first.", "err");
+    return;
+  }
+  setStatus(`Checking ${base}/health \u2026`, "busy");
+  try {
+    const r = await fetch(`${base}/health`, { method: "GET" });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json().catch(() => ({}));
+    setStatus(`Pocket TTS OK: ${j.status ?? "healthy"}`, "ok");
+  } catch (e) {
+    setStatus(`Pocket TTS unreachable: ${e.message}`, "err");
+  }
+});
+
 // ----- transport buttons -----
 els.play.addEventListener("click", () => {
   if (!state.pdfDoc) return;
@@ -591,7 +824,6 @@ els.pageJump.addEventListener("change", () => {
   });
 });
 
-// ----- playback control (engine dispatch) -----
 function findNextPageWithText(startPage) {
   for (let i = startPage; i <= state.pdfDoc.numPages; i++) {
     if ((state.pagesText[i - 1] || "").trim().length > 0) return i;
@@ -601,9 +833,6 @@ function findNextPageWithText(startPage) {
 
 function playFromCurrent() {
   if (!state.pdfDoc) return;
-  // Auto-skip empty pages (cover image, blank front matter, etc.) so the
-  // user can just hit Play on a freshly-loaded EPUB without having to
-  // manually click Next past the cover and copyright pages.
   if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
     const next = findNextPageWithText(state.currentPage);
     if (next > 0) {
@@ -620,8 +849,6 @@ function pauseInternal() {
   if (els.engine.value === "browser") {
     window.speechSynthesis.pause();
   } else if (audioCtx && audioCtx.state === "running") {
-    // Suspending the AudioContext pauses the active source at its
-    // current position. Resuming plays on from there.
     try { audioCtx.suspend(); } catch (_) {}
   }
   state.isPaused = true;
@@ -668,9 +895,6 @@ async function stopInternal() {
     if (audioCtx && audioCtx.state === "running") {
       try { await audioCtx.suspend(); } catch (_) {}
     }
-    // Drop any decoded buffers from the old play. Even if a fetch
-    // slipped past the abort check (or already finished before the
-    // await), the array is fresh for the new playPocketFromCurrent.
     state.pocketQueue = [];
     state.pocketIndex = 0;
     state.pocketBuffers = [];
@@ -682,14 +906,11 @@ async function stopInternal() {
   syncPlayButton();
 }
 
-// ----- browser TTS playback -----
 function playBrowserFromCurrent() {
   if (!("speechSynthesis" in window)) {
     setStatus("This browser does not support SpeechSynthesis.", "err");
     return;
   }
-  // Skip past empty pages (cover image, blank front matter) so a freshly-
-  // loaded EPUB with non-text front matter just plays the first chapter.
   if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
     const next = findNextPageWithText(state.currentPage);
     if (next > 0) {
@@ -756,15 +977,12 @@ function speakNextBrowserChunk() {
   window.speechSynthesis.speak(u);
 }
 
-// ----- pocket-tts playback (Web Audio API) -----
 function playPocketFromCurrent() {
   const base = els.pocketUrl.value.trim().replace(/\/+$/, "");
   if (!base) {
     setStatus("Set a Pocket TTS URL first.", "err");
     return;
   }
-  // Skip past empty pages (cover image, blank front matter) so a freshly-
-  // loaded EPUB with non-text front matter just plays the first chapter.
   if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
     const next = findNextPageWithText(state.currentPage);
     if (next > 0) {
@@ -779,17 +997,7 @@ function playPocketFromCurrent() {
   state.pocketQueue = chunkText(text, MAX_CHARS_POCKET);
   state.pocketIndex = 0;
   state.abortPocket = false;
-  // Bump the play token: any in-flight fetchAndDecodeChunk call captured
-  // the previous token and will bail before polluting the new
-  // pocketBuffers with a stale buffer. This is the fix for the
-  // "skipping ahead plays the wrong page" race: the old fetch can
-  // resolve AFTER the new play has set up its state, and without this
-  // check the old page's audio would land in pocketBuffers[0] and
-  // play.
   state.pocketPlayToken = (state.pocketPlayToken || 0) + 1;
-  // Pre-decoded AudioBuffer for each chunk. Filled lazily as the fetches
-  // complete. Pre-fetching the next chunk while the current one plays
-  // eliminates the ~1s inter-chunk gap.
   state.pocketBuffers = new Array(state.pocketQueue.length).fill(null);
   state.pocketBase = base;
   if (state.pocketQueue.length === 0) {
@@ -803,15 +1011,7 @@ function playPocketFromCurrent() {
   els.pause.disabled = false;
   els.stop.disabled = false;
   syncPlayButton();
-  // Web Audio API: create or resume the AudioContext synchronously in
-  // the click handler so the user-gesture activation is honored. The
-  // fetch to pocket-tts is async; resume() before fetch keeps the
-  // context out of the "suspended because no user gesture yet" state.
   try { getAudioCtx().resume(); } catch (_) {}
-  // Start the first fetch. When its buffer is ready, hand off to
-  // playNextPocketChunk, which checks the buffer and either plays it
-  // (if ready) or awaits it. onended then chains through the rest,
-  // and the post-play hook in playDecodedChunk pre-fetches chunk N+1.
   const myToken = state.pocketPlayToken;
   fetchAndDecodeChunk(0)
     .then(() => {
@@ -819,17 +1019,10 @@ function playPocketFromCurrent() {
       if (state.pocketPlayToken !== myToken) return;
       playNextPocketChunk();
     })
-    .catch(() => { /* error already surfaced in fetchAndDecodeChunk */ });
+    .catch(() => {});
 }
 
-// Fetch + decode a single chunk into state.pocketBuffers[index].
-// Resolves with the buffer on success, rejects on error. The caller
-// is responsible for kicking off the playback chain; this function
-// only fills the buffer slot.
 async function fetchAndDecodeChunk(index) {
-  // Capture the play token at entry. If a newer playPocketFromCurrent
-  // has bumped the token, we're a stale fetch and must bail before
-  // we touch pocketBuffers.
   const myToken = state.pocketPlayToken;
   if (state.abortPocket) return;
   if (state.pocketBuffers[index]) return state.pocketBuffers[index];
@@ -856,8 +1049,6 @@ async function fetchAndDecodeChunk(index) {
     state.pocketBuffers[index] = buffer;
     return buffer;
   } catch (e) {
-    // Only surface the error if we're still the active play. A stale
-    // fetch that errors should silently disappear.
     if (!state.abortPocket && state.pocketPlayToken === myToken) {
       setStatus(`Pocket TTS request failed: ${e.message}`, "err");
       state.isPlaying = false;
@@ -885,19 +1076,15 @@ function playNextPocketChunk() {
   }
   const buffer = state.pocketBuffers[state.pocketIndex];
   if (buffer) {
-    // Buffer is ready - play it now and pre-fetch the next one.
     playDecodedChunk(buffer);
     const nextIdx = state.pocketIndex + 1;
     if (nextIdx < state.pocketQueue.length && !state.pocketBuffers[nextIdx]) {
       fetchAndDecodeChunk(nextIdx).catch(() => {});
     }
   } else {
-    // Buffer isn't ready yet (fetch still in flight). Wait for it,
-    // then play. The next fetch was kicked off in the previous chunk's
-    // playDecodedChunk so it should be ready by the time the current
-    // one ends; this branch mostly handles the very first chunk.
     setStatus(
-      `Pocket TTS: loading chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`
+      `Pocket TTS: loading chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`,
+      "busy"
     );
     const myToken = state.pocketPlayToken;
     fetchAndDecodeChunk(state.pocketIndex)
@@ -911,7 +1098,7 @@ function playNextPocketChunk() {
           fetchAndDecodeChunk(nextIdx).catch(() => {});
         }
       })
-      .catch(() => { /* error already surfaced in fetchAndDecodeChunk */ });
+      .catch(() => {});
   }
 }
 
@@ -923,9 +1110,6 @@ function playDecodedChunk(buffer) {
   source.connect(ctx.destination);
   pocketSource = source;
   source.onended = () => {
-    // If this source is no longer the active one (Stop, engine switch,
-    // or replaced by a newer chunk), don't surface cleanup as a
-    // failure or double-queue the next chunk.
     if (pocketSource !== source) return;
     pocketSource = null;
     if (state.abortPocket) return;
@@ -934,7 +1118,8 @@ function playDecodedChunk(buffer) {
   };
   source.start(0);
   setStatus(
-    `Pocket TTS: chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`
+    `Pocket TTS: chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`,
+    "busy"
   );
 }
 
@@ -942,4 +1127,7 @@ function playDecodedChunk(buffer) {
 applyEngineVisibility();
 els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}\u00d7`;
 syncPlayButton();
-setStatus("Drop a PDF to start.");
+setAuthMode("login");
+
+// Kick off session check
+init();

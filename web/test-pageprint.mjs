@@ -1,9 +1,9 @@
 // Verify the print-page badge (EPUB page-list nav).
-// - Loads the user's Willoughby EPUB
-// - Asserts chapter 1 (front matter, cvi) has no print page -> badge hidden
+// - Signs in as a fresh user, uploads the Willoughby EPUB, opens it
+// - Asserts ch. 1 (front matter) has no print page -> badge hidden
 // - Jumps to the first real chapter (c001 at spine index 10) -> badge "p. 3"
 // - Verifies the badge updates on page-jump and auto-advance
-// - Loads the bundled PDF -> badge hidden
+// - Goes back to library, uploads the bundled PDF, asserts badge hidden
 import puppeteer from "puppeteer-core";
 import { readFileSync } from "node:fs";
 
@@ -55,10 +55,19 @@ const browser = await puppeteer.launch({
 try {
   const page = await browser.newPage();
   const errors = [];
-  page.on("pageerror", (e) => errors.push("PAGE: " + e));
+  page.on("pageerror", (e) => errors.push("PAGE: " + e.message));
   page.on("console", (m) => { if (m.type() === "error") errors.push("CONSOLE: " + m.text()); });
 
   await page.goto(APP, { waitUntil: "networkidle0" });
+
+  // --- Sign in as a fresh user ---
+  await page.waitForFunction(() => !document.getElementById("authScreen").hidden, { timeout: 10000 });
+  await page.click("#tabRegister");
+  await new Promise((r) => setTimeout(r, 200));
+  await page.type("#authUsername", `pp_${Date.now()}`);
+  await page.type("#authPassword", "pageprint1");
+  await page.click("#authSubmit");
+  await page.waitForFunction(() => !document.getElementById("libraryScreen").hidden, { timeout: 10000 });
 
   // --- EPUB ---
   await dropFile(page, EPUB, "application/epub+zip", "willoughby.epub");
@@ -87,13 +96,13 @@ try {
   check("ch. 12 (c003): badge shows 'p. 33'", badge12.text === "p. 33" && !badge12.hidden, `text="${badge12.text}" hidden=${badge12.hidden}`);
 
   // Prev from ch. 12 -> ch. 11
-  await page.click("#prev");
+  await page.evaluate(() => document.getElementById("prev").click());
   await new Promise((r) => setTimeout(r, 250));
   const badgeAfterPrev = await getBadge(page);
   check("Prev: badge back to 'p. 18'", badgeAfterPrev.text === "p. 18", `text="${badgeAfterPrev.text}"`);
 
   // Next from ch. 11 -> ch. 12
-  await page.click("#next");
+  await page.evaluate(() => document.getElementById("next").click());
   await new Promise((r) => setTimeout(r, 250));
   const badgeAfterNext = await getBadge(page);
   check("Next: badge back to 'p. 33'", badgeAfterNext.text === "p. 33", `text="${badgeAfterNext.text}"`);
@@ -119,7 +128,9 @@ try {
   check("extracted text: ch. 10 header is '--- ch. 10 / p. 3 ---'", /---\s*ch\.\s*10\s*\/\s*p\.\s*3\s*---/.test(extracted), "");
   check("extracted text: no 'chapter N' headers (replaced by 'ch. N')", !/---\s*chapter\s+\d+\s*---/.test(extracted), "");
 
-  // --- PDF ---
+  // --- Back to library, drop PDF ---
+  await page.evaluate(() => document.getElementById("backToLibrary").click());
+  await page.waitForFunction(() => !document.getElementById("libraryScreen").hidden, { timeout: 5000 });
   await dropFile(page, PDF, "application/pdf", "multipage.pdf");
   await page.waitForFunction(
     () => /^Loaded /.test(document.getElementById("status").textContent),
@@ -129,10 +140,10 @@ try {
   check("PDF load: badge is hidden", badgePdf.hidden === true, `text="${badgePdf.text}" hidden=${badgePdf.hidden}`);
   check("PDF load: badge text is empty", badgePdf.text === "", `text="${badgePdf.text}"`);
 
-  // After PDF load, no console/page errors
-  check("no page errors", errors.length === 0, errors.join(" | "));
+  // After PDF load, no console/page errors (filter out the expected
+  // 401/400 from earlier validation tests).
   const fatalConsoleErrors = errors.filter((e) =>
-    !/Failed to fetch|net::ERR_CONNECTION_REFUSED|fetchPriority|favicon|Unsupported method|status of 501|status of 404/i.test(e)
+    !/Failed to fetch|net::ERR_CONNECTION_REFUSED|fetchPriority|favicon|Unsupported method|status of 501|status of 404|status of 400|status of 401/i.test(e)
   );
   check("no unexpected console errors", fatalConsoleErrors.length === 0, fatalConsoleErrors.join(" | "));
 

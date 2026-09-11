@@ -1,0 +1,17 @@
+{
+  "name": "amazing-grace-reader-web",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Web app + backend for the Amazing Grace Reader audiobook. PDF/EPUB in, browser TTS or Pocket TTS out; library, login, and persisted books.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "bcrypt": "^5.1.1",
+    "express": "^4.22.2",
+    "express-session": "^1.19.0",
+    "multer": "^1.4.5-lts.1"
+  }
+}
