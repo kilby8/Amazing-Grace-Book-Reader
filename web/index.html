@@ -143,8 +143,9 @@
             <label for="engine" class="field-label">Engine</label>
             <div class="select-wrap">
               <select id="engine" class="field-control" aria-label="TTS engine">
-                <option value="browser" selected>Browser TTS &middot; zero setup</option>
-                <option value="pocket">Pocket TTS &middot; local server</option>
+                <option value="elevenlabs" selected>ElevenLabs &middot; cloud, works anywhere</option>
+                <option value="browser">Browser TTS &middot; zero setup, lower quality</option>
+                <option value="pocket">Pocket TTS &middot; local server only</option>
               </select>
             </div>
           </div>
@@ -184,6 +185,22 @@
               <option value="alba"></option>
               <option value="lola"></option>
             </datalist>
+          </div>
+
+          <div class="field" id="elevenLabsRow">
+            <label for="elevenLabsVoice" class="field-label">ElevenLabs voice id</label>
+            <div class="input-with-action">
+              <input
+                id="elevenLabsVoice"
+                type="text"
+                class="field-control"
+                placeholder="EXAVITQu4vr4xnSDxMaL"
+                value="EXAVITQu4vr4xnSDxMaL"
+                aria-label="ElevenLabs voice id"
+              />
+              <button id="elevenLabsStatus" type="button" class="btn btn-ghost">Check</button>
+            </div>
+            <p class="field-hint">Default is Sarah (free tier). The API key lives on the server, not the browser.</p>
           </div>
 
           <div class="field" id="browserVoiceRow">
@@ -279,6 +296,8 @@
       <a href="https://mozilla.github.io/pdf.js/" target="_blank" rel="noopener">pdf.js</a>.
       Pocket TTS is optional &mdash;
       <a href="https://github.com/kyutai/pocket-tts" target="_blank" rel="noopener">kyutai/pocket-tts</a>.
+      ElevenLabs is the default engine &mdash;
+      <a href="https://elevenlabs.io" target="_blank" rel="noopener">elevenlabs.io</a>.
     </p>
   </footer>
 

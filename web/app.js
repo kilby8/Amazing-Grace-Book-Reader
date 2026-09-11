@@ -55,6 +55,9 @@ const els = {
   pocketUrl: $("pocketUrl"),
   pocketHealth: $("pocketHealth"),
   pocketVoice: $("pocketVoice"),
+  elevenLabsRow: $("elevenLabsRow"),
+  elevenLabsVoice: $("elevenLabsVoice"),
+  elevenLabsStatus: $("elevenLabsStatus"),
   browserVoiceRow: $("browserVoiceRow"),
   browserVoice: $("browserVoice"),
   refreshVoices: $("refreshVoices"),
@@ -96,6 +99,11 @@ const state = {
   pocketBase: "",
   abortPocket: false,
   pocketPlayToken: 0,
+  elevenLabsQueue: [],
+  elevenLabsIndex: 0,
+  elevenLabsBuffers: [],
+  abortElevenLabs: false,
+  elevenLabsPlayToken: 0,
   pagePrintNumbers: null,
   chapterTitles: null,
   bookTitle: "",
@@ -439,6 +447,10 @@ wireDropzone();
 
 const MAX_CHARS_BROWSER = 220;
 const MAX_CHARS_POCKET = 600;
+// ElevenLabs is server-proxied and counts against the monthly quota.
+// 1500 chars per chunk matches the server-side cap; fewer round trips
+// = better cost-per-chapter and smoother playback.
+const MAX_CHARS_ELEVENLABS = 1500;
 
 let audioCtx = null;
 let pocketSource = null;
@@ -708,11 +720,40 @@ function setCurrentPage(n) {
 
 // ----- engine + speed -----
 function applyEngineVisibility() {
-  const isPocket = els.engine.value === "pocket";
+  const v = els.engine.value;
+  const isPocket = v === "pocket";
+  const isElevenLabs = v === "elevenlabs";
   els.pocketRow.hidden = !isPocket;
   els.pocketVoiceRow.hidden = !isPocket;
-  els.browserVoiceRow.hidden = isPocket;
+  els.elevenLabsRow.hidden = !isElevenLabs;
+  els.browserVoiceRow.hidden = isPocket || isElevenLabs;
 }
+
+// ----- ElevenLabs health probe (server has the key; we just check the route) -----
+els.elevenLabsStatus.addEventListener("click", async () => {
+  setStatus("Checking ElevenLabs \u2026", "busy");
+  try {
+    // Send a tiny text snippet; if the server returns audio, the key works.
+    const r = await fetch("/api/tts", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: "ok",
+        voice_id: els.elevenLabsVoice.value.trim() || undefined,
+      }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.error || `HTTP ${r.status}`);
+    }
+    // Drain the body so the connection closes cleanly
+    await r.arrayBuffer();
+    setStatus("ElevenLabs OK", "ok");
+  } catch (e) {
+    setStatus(`ElevenLabs unreachable: ${e.message}`, "err");
+  }
+});
 
 els.engine.addEventListener("change", () => {
   applyEngineVisibility();
@@ -841,6 +882,7 @@ function playFromCurrent() {
     }
   }
   if (els.engine.value === "browser") playBrowserFromCurrent();
+  else if (els.engine.value === "elevenlabs") playElevenLabsFromCurrent();
   else playPocketFromCurrent();
 }
 
@@ -875,7 +917,7 @@ function resumeInternal() {
       els.pause.disabled = false;
       syncPlayButton();
     }).catch((e) => {
-      setStatus(`Pocket resume error: ${e.message}`, "err");
+      setStatus(`Audio resume error: ${e.message}`, "err");
       stopInternal();
     });
   }
@@ -887,7 +929,9 @@ async function stopInternal() {
     state.browserQueue = [];
     state.browserIndex = 0;
   } else {
+    // Both pocket and elevenlabs share the WebAudio pipeline
     state.abortPocket = true;
+    state.abortElevenLabs = true;
     if (pocketSource) {
       try { pocketSource.stop(); } catch (_) {}
       pocketSource = null;
@@ -898,6 +942,9 @@ async function stopInternal() {
     state.pocketQueue = [];
     state.pocketIndex = 0;
     state.pocketBuffers = [];
+    state.elevenLabsQueue = [];
+    state.elevenLabsIndex = 0;
+    state.elevenLabsBuffers = [];
   }
   state.isPlaying = false;
   state.isPaused = false;
@@ -1119,6 +1166,151 @@ function playDecodedChunk(buffer) {
   source.start(0);
   setStatus(
     `Pocket TTS: chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`,
+    "busy"
+  );
+}
+
+// ----- ElevenLabs playback (server-proxied; same WebAudio pipeline as pocket) -----
+function playElevenLabsFromCurrent() {
+  if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
+    const next = findNextPageWithText(state.currentPage);
+    if (next > 0) {
+      setCurrentPage(next);
+      setStatus(`Skipping to page ${next} \u2014 the current page has no extractable text.`);
+    } else {
+      setStatus("No pages with extractable text.", "err");
+      return;
+    }
+  }
+  const text = state.pagesText[state.currentPage - 1] || "";
+  state.elevenLabsQueue = chunkText(text, MAX_CHARS_ELEVENLABS);
+  state.elevenLabsIndex = 0;
+  state.abortElevenLabs = false;
+  state.elevenLabsPlayToken = (state.elevenLabsPlayToken || 0) + 1;
+  state.elevenLabsBuffers = new Array(state.elevenLabsQueue.length).fill(null);
+  if (state.elevenLabsQueue.length === 0) {
+    setStatus(`Page ${state.currentPage} has no extractable text.`, "err");
+    return;
+  }
+  setStatus(`Reading page ${state.currentPage} via ElevenLabs \u2026`, "busy");
+  state.isPlaying = true;
+  state.isPaused = false;
+  els.play.disabled = true;
+  els.pause.disabled = false;
+  els.stop.disabled = false;
+  syncPlayButton();
+  try { getAudioCtx().resume(); } catch (_) {}
+  const myToken = state.elevenLabsPlayToken;
+  fetchAndDecodeElevenLabsChunk(0)
+    .then(() => {
+      if (state.abortElevenLabs) return;
+      if (state.elevenLabsPlayToken !== myToken) return;
+      playNextElevenLabsChunk();
+    })
+    .catch(() => {});
+}
+
+async function fetchAndDecodeElevenLabsChunk(index) {
+  const myToken = state.elevenLabsPlayToken;
+  if (state.abortElevenLabs) return;
+  if (state.elevenLabsBuffers[index]) return state.elevenLabsBuffers[index];
+  const chunk = state.elevenLabsQueue[index];
+  try {
+    const r = await fetch("/api/tts", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        text: chunk,
+        voice_id: els.elevenLabsVoice.value.trim() || undefined,
+      }),
+    });
+    if (state.abortElevenLabs || state.elevenLabsPlayToken !== myToken) return;
+    if (!r.ok) {
+      const j = await r.json().catch(() => ({}));
+      throw new Error(j.error || `HTTP ${r.status}`);
+    }
+    const arrayBuffer = await r.arrayBuffer();
+    if (state.abortElevenLabs || state.elevenLabsPlayToken !== myToken) return;
+    const ctx = getAudioCtx();
+    if (ctx.state === "suspended") {
+      try { await ctx.resume(); } catch (_) {}
+    }
+    const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    if (state.abortElevenLabs || state.elevenLabsPlayToken !== myToken) return;
+    state.elevenLabsBuffers[index] = buffer;
+    return buffer;
+  } catch (e) {
+    if (!state.abortElevenLabs && state.elevenLabsPlayToken === myToken) {
+      setStatus(`ElevenLabs request failed: ${e.message}`, "err");
+      state.isPlaying = false;
+      els.play.disabled = !state.pdfDoc;
+      els.pause.disabled = true;
+    }
+    throw e;
+  }
+}
+
+function playNextElevenLabsChunk() {
+  if (state.abortElevenLabs) return;
+  if (state.elevenLabsIndex >= state.elevenLabsQueue.length) {
+    if (state.pdfDoc && state.currentPage < state.pdfDoc.numPages) {
+      setCurrentPage(state.currentPage + 1);
+      playElevenLabsFromCurrent();
+    } else {
+      setStatus("Reached the end of the document.", "ok");
+      state.isPlaying = false;
+      els.play.disabled = !state.pdfDoc;
+      els.pause.disabled = true;
+      syncPlayButton();
+    }
+    return;
+  }
+  const buffer = state.elevenLabsBuffers[state.elevenLabsIndex];
+  if (buffer) {
+    playElevenLabsDecodedChunk(buffer);
+    const nextIdx = state.elevenLabsIndex + 1;
+    if (nextIdx < state.elevenLabsQueue.length && !state.elevenLabsBuffers[nextIdx]) {
+      fetchAndDecodeElevenLabsChunk(nextIdx).catch(() => {});
+    }
+  } else {
+    setStatus(
+      `ElevenLabs: loading chunk ${state.elevenLabsIndex + 1}/${state.elevenLabsQueue.length} on page ${state.currentPage} \u2026`,
+      "busy"
+    );
+    const myToken = state.elevenLabsPlayToken;
+    fetchAndDecodeElevenLabsChunk(state.elevenLabsIndex)
+      .then((buf) => {
+        if (state.abortElevenLabs) return;
+        if (state.elevenLabsPlayToken !== myToken) return;
+        if (!buf) return;
+        playElevenLabsDecodedChunk(buf);
+        const nextIdx = state.elevenLabsIndex + 1;
+        if (nextIdx < state.elevenLabsQueue.length && !state.elevenLabsBuffers[nextIdx]) {
+          fetchAndDecodeElevenLabsChunk(nextIdx).catch(() => {});
+        }
+      })
+      .catch(() => {});
+  }
+}
+
+function playElevenLabsDecodedChunk(buffer) {
+  const ctx = getAudioCtx();
+  const source = ctx.createBufferSource();
+  source.buffer = buffer;
+  source.playbackRate.value = Number(els.speed.value) || 1.0;
+  source.connect(ctx.destination);
+  pocketSource = source; // shared with pocket - we only ever have one playback pipeline live
+  source.onended = () => {
+    if (pocketSource !== source) return;
+    pocketSource = null;
+    if (state.abortElevenLabs) return;
+    state.elevenLabsIndex += 1;
+    playNextElevenLabsChunk();
+  };
+  source.start(0);
+  setStatus(
+    `ElevenLabs: chunk ${state.elevenLabsIndex + 1}/${state.elevenLabsQueue.length} on page ${state.currentPage} \u2026`,
     "busy"
   );
 }

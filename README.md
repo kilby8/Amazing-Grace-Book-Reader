@@ -1,18 +1,64 @@
-# Amazing-Grace-Book-Reader
+# Amazing Grace Reader
 
-Native Android app (Kotlin + Jetpack Compose) that:
-- Captures or imports page images
-- Extracts text fully on-device with ML Kit OCR
-- Reads text aloud with TextToSpeech
-- Supports pause/resume from last spoken offset
-- Continues playback with screen locked via foreground playback service
-- Saves recent scans locally with Room history
+Read your books aloud. Drop a PDF or EPUB into a personal library, pick a
+voice, hit Play.
 
-## Releases
+The **web app is the primary surface** — a per-user library + reader that
+runs in any modern browser, with cloud or local TTS, designed to work
+remotely over a tailnet or self-hosted URL.
 
-- [v0.1.0](https://github.com/kilby8/Amazing-Grace-Book-Reader/releases/tag/v0.1.0) — drop PDF + pocket-tts. Debug + release APKs attached.
+The Android app (`app/`) is the secondary surface — a Kotlin/Compose port
+that talks to a local [pocket-tts](https://github.com/kyutai-labs/pocket-tts)
+server. It ships standalone APKs and works offline.
 
-## Key Features
+## Web app (`web/`) — primary
+
+Per-user library + read-aloud reader. Three screens (auth · library ·
+reader) in one SPA, with a tiny Express backend and SQLite for storage.
+
+**TTS engines (pick in the settings sidebar):**
+- **ElevenLabs** *(default)* — cloud, works anywhere you can reach the URL.
+  Voice id field, free-tier compatible (`eleven_turbo_v2_5`). API key is
+  read by the server from `~/.mavis/elevenlabs_credentials.json` (or
+  `ELEVENLABS_API_KEY` env var) and never leaves the server.
+- **Browser TTS** — built-in `SpeechSynthesis`. Zero setup, lower quality.
+- **Pocket TTS** — local HTTP server (`127.0.0.1:8765`). Best quality when
+  the box can reach the server.
+
+**Run it:**
+```bash
+cd web
+npm install
+node server.js          # listens on http://127.0.0.1:8770
+```
+
+**Storage layout:**
+- `data/library.db` — SQLite (WAL mode), `users` + `books` tables
+- `data/books/<user-id>/<filename>` — raw uploads, per-user folders
+- Both gitignored
+
+**Expose it remotely:**
+- Tailscale (default for your own devices) — no extra config, just run on a
+  Tailscale-attached box.
+- Tailscale Funnel / ngrok — `tailscale funnel --bg 8770` and friends can
+  hit it without a tailnet.
+- Self-host behind Caddy — `caddy reverse-proxy --from your.domain --to
+  127.0.0.1:8770` for a real public URL. Set `SESSION_SECRET` to a random
+  value and flip `cookie.secure` to `true` in `server.js`.
+
+**Tests:**
+- `node test-library.mjs` — register/login/upload/per-user isolation/delete (26 checks)
+- `node test-pageprint.mjs` — print-page badge in EPUB nav (13 checks)
+- `node test-epub.mjs` — EPUB extraction + transport (11 checks)
+- `node test-elevenlabs.mjs` — TTS proxy auth gate + live round-trip + browser UI (14 checks)
+
+Run them with the backend up: `node test-library.mjs && node test-pageprint.mjs && node test-epub.mjs && node test-elevenlabs.mjs`.
+
+## Android app (`app/`) — secondary
+
+Native Kotlin + Jetpack Compose port. Captures or imports page images,
+extracts text fully on-device with ML Kit OCR, reads aloud with TTS,
+saves scans locally with Room history.
 
 - Camera capture with full-resolution FileProvider flow
 - Gallery/photo picker import
@@ -23,59 +69,40 @@ Native Android app (Kotlin + Jetpack Compose) that:
 - Media-style lockscreen controls with playback metadata
 - Live text highlighting and auto-follow scrolling while speaking
 - Voice customization: speech rate and pitch sliders
-- Reader accessibility controls: small/medium/large text size
-- OCR issue guidance banner for low-quality scans
-- Local scan history with delete + undo and retention limit (200)
-- Copy to clipboard and share extracted text
-- Session restore for last text and voice settings using DataStore
+- Local scan history with delete + undo
 
-## Project Structure
+**Project structure:**
+- `app/src/main/java/com/amazinggrace/bookreader/MainActivity.kt`
+- `app/src/main/java/com/amazinggrace/bookreader/ocr/OcrManager.kt`
+- `app/src/main/java/com/amazinggrace/bookreader/tts/TtsManager.kt`
+- `app/src/main/java/com/amazinggrace/bookreader/tts/PocketTtsClient.kt`
+- `app/src/main/java/com/amazinggrace/bookreader/service/ReaderPlaybackService.kt`
+- `app/src/main/java/com/amazinggrace/bookreader/history/`
+- `app/src/main/java/com/amazinggrace/bookreader/data/ReaderPreferences.kt`
+- `app/src/main/java/com/amazinggrace/bookreader/ui/ReaderScreen.kt`
 
-- app/src/main/java/com/amazinggrace/bookreader/MainActivity.kt
-- app/src/main/java/com/amazinggrace/bookreader/ocr/OcrManager.kt
-- app/src/main/java/com/amazinggrace/bookreader/tts/TtsManager.kt
-- app/src/main/java/com/amazinggrace/bookreader/tts/PlaybackSessionState.kt
-- app/src/main/java/com/amazinggrace/bookreader/service/ReaderPlaybackService.kt
-- app/src/main/java/com/amazinggrace/bookreader/history/
-- app/src/main/java/com/amazinggrace/bookreader/data/ReaderPreferences.kt
-- app/src/main/java/com/amazinggrace/bookreader/ui/ReaderScreen.kt
-
-## Build & Test
-
-Prerequisites:
-- JDK 17
-- Android SDK installed and configured
-
-If your local Android SDK is not auto-detected, create local.properties:
-
-sdk.dir=/path/to/android/sdk
-
-Commands:
-
+**Build & test:**
+```bash
 ./gradlew test
 ./gradlew assembleDebug
+```
 
-## Automated Tests
+Drop PDF + Pocket TTS (optional opt-in): the Android app can read a PDF
+aloud by sending extracted text to a local pocket-tts HTTP server. Built-in
+Android TTS remains the default. Launch with `tools\launch-pocket-tts.ps1`,
+pick **Pocket TTS** in the engine selector, tap **Open PDF**. Full setup
+in [`DEV.md`](./DEV.md).
 
-- Unit tests:
-	- app/src/test/java/com/amazinggrace/bookreader/tts/PlaybackSessionStateTest.kt
-	- app/src/test/java/com/amazinggrace/bookreader/tts/PocketTtsClientTest.kt
-	- app/src/test/java/com/amazinggrace/bookreader/domain/PdfTextExtractorTest.kt
-	- app/src/test/java/com/amazinggrace/bookreader/tts/TtsManagerFacadeTest.kt
-- Instrumentation tests:
-	- app/src/androidTest/java/com/amazinggrace/bookreader/history/ScanHistoryDaoTest.kt
-	- app/src/androidTest/java/com/amazinggrace/bookreader/data/ReaderPreferencesTest.kt
+## Releases
 
-## Drop PDF + Pocket TTS
+- [v0.1.0](https://github.com/kilby8/Amazing-Grace-Book-Reader/releases/tag/v0.1.0) — drop PDF + pocket-tts, Android debug + release APKs.
 
-Optional opt-in mode that lets the app read a PDF aloud by sending the
-extracted text to a local [pocket-tts](https://github.com/kyutai-labs/pocket-tts)
-HTTP server (`POST /tts` → WAV → `android.media.MediaPlayer`). The built-in
-Android TTS path remains the default; no new user-side dependencies are
-required to skip this feature.
+## Why web-first
 
-To run it: launch the local server with `tools\launch-pocket-tts.ps1`, then
-in the app pick **Pocket TTS** in the TTS engine selector and tap **Open
-PDF**. Full step-by-step setup, troubleshooting, and the URL the app expects
-(including the emulator `10.0.2.2` mapping) live in
-[`DEV.md`](./DEV.md).
+The library system (per-user accounts, uploads, persistence, delete) lives
+in the web app — it has a real backend, a real DB, and a real auth flow.
+The Android app is offline-only and single-device. Once the web app is
+deployed somewhere you can reach (Tailscale, Funnel, VPS), it's the
+canonical place to read your books. The Android app stays useful for the
+"phone camera + pocket-tts in the field" workflow that doesn't need any
+of that infrastructure.

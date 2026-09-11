@@ -76,6 +76,12 @@ try {
     { timeout: 30000 }
   );
 
+  // This test exercises page-jump / prev / next - all of which auto-play.
+  // Switch to browser TTS to avoid hitting ElevenLabs' free-tier
+  // concurrent-request cap (max 4 in flight).
+  await page.select("#engine", "browser");
+  await new Promise((r) => setTimeout(r, 200));
+
   // Chapter 1 is the copyright page (cvi) - no print page in the nav
   const badge1 = await getBadge(page);
   check("ch. 1 (front matter): badge hidden", badge1.hidden === true, `text="${badge1.text}" hidden=${badge1.hidden}`);

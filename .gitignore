@@ -25,6 +25,7 @@ TEAM-CHARTER.md
 web/test-diag*.mjs
 web/test-browser.mjs
 web/test-chunker.mjs
+web/shot-elevenlabs.mjs
 web/test-compare.mjs
 web/test-debug.mjs
 web/test-decode.mjs
