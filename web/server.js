@@ -20,6 +20,8 @@ const os = require("node:os");
 const express = require("express");
 const session = require("express-session");
 const multer = require("multer");
+const helmet = require("helmet");
+const rateLimit = require("express-rate-limit");
 
 const { getDb, closeDb } = require("./db");
 const {
@@ -31,6 +33,13 @@ const {
 
 const PORT = Number(process.env.PORT || 8770);
 const HOST = process.env.HOST || "127.0.0.1";
+const NODE_ENV = process.env.NODE_ENV || "development";
+const IS_PROD = NODE_ENV === "production";
+const SESSION_SECRET = process.env.SESSION_SECRET;
+if (IS_PROD && !SESSION_SECRET) {
+  console.error("FATAL: SESSION_SECRET is required in production. Refusing to start.");
+  process.exit(1);
+}
 const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.resolve(__dirname, "..", "data");
@@ -70,25 +79,83 @@ fs.mkdirSync(BOOKS_DIR, { recursive: true });
 
 const app = express();
 app.disable("x-powered-by");
+// Trust the first proxy hop (Caddy) when behind HTTPS; required for
+// express-rate-limit to see the real client IP and for secure cookies
+// to flow correctly.
+if (IS_PROD) app.set("trust proxy", 1);
+// Security headers (CSP allows the CDN scripts + Google Fonts + style
+// inline attributes the reader UI relies on). Loopback hosts are
+// permitted in connect-src so the pocket-tts engine (which lives at
+// 127.0.0.1:8765 on the reader's own box) can be reached.
+app.use(
+  helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: [
+          "'self'",
+          "https://cdnjs.cloudflare.com",
+          "https://cdn.jsdelivr.net",
+        ],
+        styleSrc: [
+          "'self'",
+          "https://fonts.googleapis.com",
+          "'unsafe-inline'",
+        ],
+        fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
+        imgSrc: ["'self'", "data:", "blob:"],
+        connectSrc: [
+          "'self'",
+          "http://127.0.0.1:*",
+          "http://localhost:*",
+        ],
+        mediaSrc: ["'self'", "blob:"],
+        objectSrc: ["'self'", "blob:"],
+        workerSrc: ["'self'", "blob:"],
+        frameSrc: ["'self'"],
+        baseUri: ["'self'"],
+        formAction: ["'self'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false,
+  })
+);
 app.use(express.json({ limit: "64kb" }));
 
 app.use(
   session({
     name: "agr.sid",
-    secret:
-      process.env.SESSION_SECRET ||
-      "dev-only-secret-replace-in-production-AGR",
+    secret: SESSION_SECRET || "dev-only-secret-replace-in-production-AGR",
     resave: false,
     saveUninitialized: false,
     rolling: true,
     cookie: {
       httpOnly: true,
       sameSite: "lax",
-      secure: false, // local HTTP; flip to true behind HTTPS in prod
+      secure: IS_PROD, // true in prod (HTTPS only), false in dev
       maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
     },
   })
 );
+
+// Rate limit: 30 req / 15 min per IP on auth endpoints. Generous enough
+// for normal use, hostile enough to stop credential stuffing.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Too many requests, slow down." },
+});
+// TTS proxy is the most expensive endpoint - cap per-user rate at 60/min
+// (≈ one short chapter of chunks per minute sustained).
+const ttsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 60,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "TTS rate limit hit, slow down." },
+});
 
 // ----- Multer setup: per-user destination, sanitized filename -----
 const upload = multer({
@@ -126,7 +193,7 @@ function deriveTitle(originalName) {
 
 // ----- Auth endpoints -----
 
-app.post("/api/auth/register", async (req, res, next) => {
+app.post("/api/auth/register", authLimiter, async (req, res, next) => {
   try {
     const { username, password } = req.body || {};
     const user = await createUser(username, password);
@@ -141,7 +208,7 @@ app.post("/api/auth/register", async (req, res, next) => {
   }
 });
 
-app.post("/api/auth/login", async (req, res, next) => {
+app.post("/api/auth/login", authLimiter, async (req, res, next) => {
   try {
     const { username, password } = req.body || {};
     const user = await verifyUser(username, password);
@@ -243,7 +310,7 @@ app.get("/api/books/:id/file", requireAuth, (req, res) => {
 // The ElevenLabs API key is read from ELEVENLABS_API_KEY env var or
 // ~/.mavis/elevenlabs_credentials.json and never sent to the browser.
 
-app.post("/api/tts", requireAuth, async (req, res, next) => {
+app.post("/api/tts", requireAuth, ttsLimiter, async (req, res, next) => {
   try {
     const apiKey = loadElevenLabsKey();
     if (!apiKey) {

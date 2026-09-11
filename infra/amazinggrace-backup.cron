@@ -1,0 +1,11 @@
+# Nightly backup for the Amazing Grace Reader web app.
+# Install with: sudo cp infra/amazinggrace-backup.cron /etc/cron.d/amazinggrace-backup
+# and reload cron. Adjust DATA_DIR if you provisioned somewhere else.
+
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+NODE_ENV=production
+
+# 03:00 every day; sqlite3 .backup keeps the snapshot consistent without
+# taking the app offline.
+0 3 * * * agr /opt/amazing-grace/infra/backup.sh >> /var/log/amazinggrace-backup.log 2>&1
