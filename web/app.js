@@ -35,6 +35,7 @@ const els = {
   next: $("next"),
   pageJump: $("pageJump"),
   pageCount: $("pageCount"),
+  pagePrint: $("pagePrint"),
   textOut: $("textOut"),
 };
 
@@ -56,6 +57,10 @@ const state = {
   abortPocket: false,
   pocketPlayToken: 0,      // increments each time playPocketFromCurrent runs; in-flight
                            // fetches capture this and bail if a newer play has started
+  // Per-chapter first print page number, parsed from the EPUB's
+  // page-list nav (EPUB 3 nav[epub:type=page-list]). Indexed by spine
+  // position (1-based). Null for PDFs (no equivalent metadata).
+  pagePrintNumbers: null,
 };
 
 const MAX_CHARS_BROWSER = 220;
@@ -85,6 +90,34 @@ function setStatus(msg, kind = "") {
   els.status.textContent = msg;
 }
 
+// ----- page-print badge (EPUB only) -----
+// For an EPUB that ships a <nav epub:type="page-list">, each spine item
+// is mapped to a print page number on load (state.pagePrintNumbers, 1-based
+// aligned with state.currentPage). The badge shows "p. N" next to the
+// chapter readout when the current chapter has one, and is hidden for
+// PDFs and for EPUB chapters with no print-page mapping.
+function updatePagePrintBadge() {
+  const pp = state.pagePrintNumbers && state.pagePrintNumbers[state.currentPage - 1];
+  if (pp) {
+    els.pagePrint.textContent = `p. ${pp}`;
+    els.pagePrint.hidden = false;
+  } else {
+    els.pagePrint.textContent = "";
+    els.pagePrint.hidden = true;
+  }
+}
+
+// setCurrentPage is the one place that touches state.currentPage + the
+// page-jump input during playback. Routing the print-page badge update
+// through here means the badge tracks the chapter readout no matter
+// how the page change was triggered (Play, Prev, Next, pageJump, or
+// auto-advance after the last chunk plays).
+function setCurrentPage(n) {
+  state.currentPage = n;
+  if (els.pageJump) els.pageJump.value = String(n);
+  updatePagePrintBadge();
+}
+
 // ----- engine-visibility plumbing -----
 function applyEngineVisibility() {
   const isPocket = els.engine.value === "pocket";
@@ -98,7 +131,7 @@ els.engine.addEventListener("change", () => {
   if (state.isPlaying || state.isPaused) {
     const restartFromPage = state.currentPage;
     stopInternal().then(() => {
-      state.currentPage = restartFromPage;
+      setCurrentPage(restartFromPage);
       playFromCurrent();
     });
   }
@@ -114,7 +147,7 @@ els.speed.addEventListener("input", () => {
       stopInternal().then(() => {
         state.browserQueue = remaining;
         state.browserIndex = 0;
-        state.currentPage = restartFromPage;
+        setCurrentPage(restartFromPage);
         playFromCurrent();
       });
     } else if (pocketSource) {
@@ -226,6 +259,7 @@ async function loadPdfFile(file) {
     const doc = await pdfjsLib.getDocument({ data: buf }).promise;
     state.pdfDoc = doc;
     state.pagesText = [];
+    state.pagePrintNumbers = null;  // PDFs have no equivalent of the EPUB page-list
     for (let i = 1; i <= doc.numPages; i++) {
       setStatus(`Extracting text: page ${i} / ${doc.numPages} \u2026`);
       const page = await doc.getPage(i);
@@ -238,10 +272,9 @@ async function loadPdfFile(file) {
         .trim();
       state.pagesText.push(text);
     }
-    state.currentPage = 1;
+    setCurrentPage(1);
     els.pageCount.textContent = String(doc.numPages);
     els.pageJump.disabled = false;
-    els.pageJump.value = 1;
     els.pageJump.max = String(doc.numPages);
     els.prev.disabled = false;
     els.next.disabled = false;
@@ -281,6 +314,47 @@ async function loadEpubFile(file) {
     if (!opfPath) throw new Error("EPUB container.xml has no rootfile full-path");
     const opfText = await zip.file(opfPath).async("string");
     const opfDoc = new DOMParser().parseFromString(opfText, "application/xml");
+    // OPF relative hrefs are resolved against the directory containing the
+    // OPF. Computed once and reused for the nav doc and every spine item.
+    const opfDir = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
+    // Parse the EPUB 3 page-list nav (if present) into a map of href basename
+    // -> first print page number. Falls back to no print-page numbers if the
+    // nav document has no page-list.
+    let pageNumberByHref = {};
+    const navItem = opfDoc.querySelector('manifest > item[properties*="nav"]');
+    if (navItem) {
+      const navHref = navItem.getAttribute("href") || "";
+      const navPath = navHref.startsWith("/") ? navHref.slice(1) : opfDir + navHref;
+      const navEntry = zip.file(navPath);
+      if (navEntry) {
+        const navText = await navEntry.async("string");
+        const navDoc = new DOMParser().parseFromString(navText, "application/xhtml+xml");
+        // Find the page-list nav regardless of how the parser exposed the
+        // epub: namespace. The simplest is to iterate every <nav> and look
+        // for the type attribute by local name.
+        let pl = null;
+        navDoc.querySelectorAll("nav").forEach((n) => {
+          if (pl) return;
+          for (const a of n.attributes) {
+            if (a.localName === "type" && a.value === "page-list") pl = n;
+          }
+        });
+        if (pl) {
+          pl.querySelectorAll("a").forEach((a) => {
+            const href = a.getAttribute("href") || "";
+            const fullFile = href.split("#")[0];
+            if (!fullFile) return;
+            // Index by basename so it matches the spine lookup below
+            // (spine items carry a path-relative href, e.g. xhtml/..._r1.xhtml,
+            // and we only need the basename for the chapter->page map).
+            const base = fullFile.split("/").pop();
+            const label = (a.textContent || "").trim();
+            if (!label) return;
+            if (!(base in pageNumberByHref)) pageNumberByHref[base] = label;
+          });
+        }
+      }
+    }
     // Build id -> href from the manifest.
     const items = {};
     opfDoc.querySelectorAll("manifest > item").forEach((el) => {
@@ -296,7 +370,12 @@ async function loadEpubFile(file) {
       .map((el) => el.getAttribute("idref"))
       .filter((id) => id && items[id]);
     if (spineIds.length === 0) throw new Error("EPUB spine is empty");
-    const opfDir = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
+    // Map each spine position to its print page number (or null).
+    const pagePrintNumbers = spineIds.map((id) => {
+      const href = items[id] || "";
+      const base = href.split("/").pop();  // basename of the XHTML file
+      return pageNumberByHref[base] || null;
+    });
     // For each spine item, read the XHTML and extract text.
     const pages = [];
     for (let i = 0; i < spineIds.length; i++) {
@@ -340,10 +419,10 @@ async function loadEpubFile(file) {
     }
     state.pdfDoc = { numPages: pages.length, _kind: "epub" };
     state.pagesText = pages;
-    state.currentPage = 1;
+    state.pagePrintNumbers = pagePrintNumbers;
+    setCurrentPage(1);
     els.pageCount.textContent = String(pages.length);
     els.pageJump.disabled = false;
-    els.pageJump.value = 1;
     els.pageJump.max = String(pages.length);
     els.prev.disabled = false;
     els.next.disabled = false;
@@ -355,7 +434,11 @@ async function loadEpubFile(file) {
       `Loaded ${title}: ${pages.length} chapter${pages.length === 1 ? "" : "s"}, ${totalChars} chars.`,
       "ok"
     );
-    els.textOut.textContent = pages.map((p, i) => `--- chapter ${i + 1} ---\n${p}`).join("\n\n");
+    els.textOut.textContent = pages.map((p, i) => {
+      const pn = pagePrintNumbers[i];
+      const tag = pn ? `ch. ${i + 1} / p. ${pn}` : `ch. ${i + 1}`;
+      return `--- ${tag} ---\n${p}`;
+    }).join("\n\n");
   } catch (e) {
     console.error(e);
     setStatus(`Failed to read EPUB: ${e.message}`, "err");
@@ -413,8 +496,7 @@ els.prev.addEventListener("click", () => {
   if (!state.pdfDoc) return;
   const restartFromPage = Math.max(1, state.currentPage - 1);
   stopInternal().then(() => {
-    state.currentPage = restartFromPage;
-    els.pageJump.value = String(restartFromPage);
+    setCurrentPage(restartFromPage);
     playFromCurrent();
   });
 });
@@ -422,17 +504,15 @@ els.next.addEventListener("click", () => {
   if (!state.pdfDoc) return;
   const restartFromPage = Math.min(state.pdfDoc.numPages, state.currentPage + 1);
   stopInternal().then(() => {
-    state.currentPage = restartFromPage;
-    els.pageJump.value = String(restartFromPage);
+    setCurrentPage(restartFromPage);
     playFromCurrent();
   });
 });
 els.pageJump.addEventListener("change", () => {
   if (!state.pdfDoc) return;
   const n = Math.max(1, Math.min(state.pdfDoc.numPages, Number(els.pageJump.value) || 1));
-  els.pageJump.value = String(n);
   stopInternal().then(() => {
-    state.currentPage = n;
+    setCurrentPage(n);
     playFromCurrent();
   });
 });
@@ -453,8 +533,7 @@ function playFromCurrent() {
   if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
     const next = findNextPageWithText(state.currentPage);
     if (next > 0) {
-      state.currentPage = next;
-      els.pageJump.value = String(next);
+      setCurrentPage(next);
       setStatus(`Skipping to page ${next} \u2014 the current page has no extractable text.`);
     }
   }
@@ -536,8 +615,7 @@ function playBrowserFromCurrent() {
   if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
     const next = findNextPageWithText(state.currentPage);
     if (next > 0) {
-      state.currentPage = next;
-      els.pageJump.value = String(next);
+      setCurrentPage(next);
       setStatus(`Skipping to page ${next} \u2014 the current page has no extractable text.`);
     } else {
       setStatus("No pages with extractable text.", "err");
@@ -564,8 +642,7 @@ function speakNextBrowserChunk() {
   if (!state.isPlaying || state.isPaused) return;
   if (state.browserIndex >= state.browserQueue.length) {
     if (state.pdfDoc && state.currentPage < state.pdfDoc.numPages) {
-      state.currentPage += 1;
-      els.pageJump.value = String(state.currentPage);
+      setCurrentPage(state.currentPage + 1);
       playBrowserFromCurrent();
     } else {
       setStatus("Reached the end of the document.", "ok");
@@ -612,8 +689,7 @@ function playPocketFromCurrent() {
   if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
     const next = findNextPageWithText(state.currentPage);
     if (next > 0) {
-      state.currentPage = next;
-      els.pageJump.value = String(next);
+      setCurrentPage(next);
       setStatus(`Skipping to page ${next} \u2014 the current page has no extractable text.`);
     } else {
       setStatus("No pages with extractable text.", "err");
@@ -716,8 +792,7 @@ function playNextPocketChunk() {
   if (state.abortPocket) return;
   if (state.pocketIndex >= state.pocketQueue.length) {
     if (state.pdfDoc && state.currentPage < state.pdfDoc.numPages) {
-      state.currentPage += 1;
-      els.pageJump.value = String(state.currentPage);
+      setCurrentPage(state.currentPage + 1);
       playPocketFromCurrent();
     } else {
       setStatus("Reached the end of the document.", "ok");

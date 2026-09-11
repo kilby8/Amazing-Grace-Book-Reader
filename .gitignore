@@ -20,3 +20,6 @@ app/build/
 
 # Team / agent metadata (not source)
 TEAM-CHARTER.md
+
+# Diagnostic scratch tests (transient; keep canonical tests like test-epub.mjs, test-pageprint.mjs)
+web/test-diag*.mjs
