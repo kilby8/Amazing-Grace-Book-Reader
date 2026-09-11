@@ -7,6 +7,12 @@
   <link rel="stylesheet" href="styles.css" />
   <!-- empty favicon to suppress the 404 browsers ask for by default -->
   <link rel="icon" href="data:," />
+  <!--
+    JSZip from CDN (pinned). Used for EPUB support: EPUBs are ZIP
+    archives; JSZip lets the app read container.xml + the OPF + each
+    chapter XHTML without needing a server.
+  -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 </head>
 <body>
   <header class="topbar">
@@ -81,7 +87,7 @@
     >
       <p class="drop-main">Drop a PDF here</p>
       <p class="drop-sub">or <button id="pickFile" type="button" class="link">choose a file</button></p>
-      <input id="file" type="file" accept="application/pdf,.pdf" hidden />
+      <input id="file" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub" hidden />
     </section>
 
     <section class="status" aria-live="polite">

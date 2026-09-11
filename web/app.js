@@ -184,7 +184,7 @@ els.drop.addEventListener("keydown", (e) => {
 });
 els.file.addEventListener("change", (e) => {
   const f = e.target.files && e.target.files[0];
-  if (f) loadPdfFile(f);
+  if (f) loadDocument(f);
 });
 
 // ----- drag and drop -----
@@ -204,10 +204,19 @@ els.file.addEventListener("change", (e) => {
 );
 els.drop.addEventListener("drop", (e) => {
   const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) loadPdfFile(f);
+  if (f) loadDocument(f);
 });
 
-// ----- PDF loading -----
+// ----- document loading (PDF or EPUB) -----
+async function loadDocument(file) {
+  if (!file) return;
+  const name = (file.name || "").toLowerCase();
+  if (name.endsWith(".epub") || file.type === "application/epub+zip") {
+    return loadEpubFile(file);
+  }
+  return loadPdfFile(file);
+}
+
 async function loadPdfFile(file) {
   if (!file) return;
   setStatus(`Reading ${file.name} (${(file.size / 1024).toFixed(0)} KB) \u2026`);
@@ -246,6 +255,110 @@ async function loadPdfFile(file) {
   } catch (e) {
     console.error(e);
     setStatus(`Failed to read PDF: ${e.message}`, "err");
+  }
+}
+
+// EPUB: an EPUB is a ZIP archive. The relevant files inside are:
+//   - META-INF/container.xml: points at the OPF
+//   - OEBPS/<name>.opf: manifest + spine (reading order)
+//   - OEBPS/xhtml/<chapter>.xhtml: each chapter as XHTML
+// We use JSZip (loaded via <script>) to unzip, the browser's DOMParser
+// to parse XML/XHTML, and treat each spine item as a "page" in the app.
+async function loadEpubFile(file) {
+  if (!file) return;
+  if (typeof JSZip === "undefined") {
+    setStatus("EPUB support needs JSZip; reload the page to load it.", "err");
+    return;
+  }
+  setStatus(`Reading ${file.name} (${(file.size / 1024).toFixed(0)} KB) \u2026`);
+  try {
+    setStatus("Unzipping EPUB \u2026");
+    const buf = await file.arrayBuffer();
+    const zip = await JSZip.loadAsync(buf);
+    const container = await zip.file("META-INF/container.xml").async("string");
+    const containerDoc = new DOMParser().parseFromString(container, "application/xml");
+    const opfPath = containerDoc.querySelector("rootfile").getAttribute("full-path");
+    if (!opfPath) throw new Error("EPUB container.xml has no rootfile full-path");
+    const opfText = await zip.file(opfPath).async("string");
+    const opfDoc = new DOMParser().parseFromString(opfText, "application/xml");
+    // Build id -> href from the manifest.
+    const items = {};
+    opfDoc.querySelectorAll("manifest > item").forEach((el) => {
+      const id = el.getAttribute("id");
+      const href = el.getAttribute("href");
+      const props = el.getAttribute("properties") || "";
+      if (id && href && props.indexOf("nav") === -1) {
+        items[id] = href;
+      }
+    });
+    // Spine is the reading order.
+    const spineIds = Array.from(opfDoc.querySelectorAll("spine > itemref"))
+      .map((el) => el.getAttribute("idref"))
+      .filter((id) => id && items[id]);
+    if (spineIds.length === 0) throw new Error("EPUB spine is empty");
+    const opfDir = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
+    // For each spine item, read the XHTML and extract text.
+    const pages = [];
+    for (let i = 0; i < spineIds.length; i++) {
+      const id = spineIds[i];
+      const href = items[id];
+      const fullPath = opfDir + href;
+      setStatus(`Extracting chapter ${i + 1} / ${spineIds.length} \u2026`);
+      const entry = zip.file(fullPath);
+      if (!entry) {
+        pages.push("");
+        continue;
+      }
+      const xhtml = await entry.async("string");
+      const xhtmlDoc = new DOMParser().parseFromString(xhtml, "application/xhtml+xml");
+      // Walk the text nodes, ignoring <script>/<style>. Insert paragraph
+      // breaks at block-level elements so the chunker sees natural
+      // sentence boundaries.
+      const SKIP = new Set(["SCRIPT", "STYLE", "HEAD"]);
+      let text = "";
+      const walk = (node) => {
+        if (!node) return;
+        if (node.nodeType === 1 /* Element */) {
+          if (SKIP.has(node.tagName)) return;
+          const isBlock = /^(P|DIV|SECTION|ARTICLE|HEADER|FOOTER|H[1-6]|BR|LI|BLOCKQUOTE|HR)$/i.test(node.tagName);
+          if (isBlock && text && !text.endsWith("\n")) text += "\n";
+          for (const child of node.childNodes) walk(child);
+          if (isBlock && !text.endsWith("\n")) text += "\n";
+        } else if (node.nodeType === 3 /* Text */) {
+          text += node.nodeValue;
+        }
+      };
+      walk(xhtmlDoc.body || xhtmlDoc.documentElement);
+      // Strip leftover tags, normalize whitespace, keep paragraph breaks.
+      text = text
+        .replace(/<[^>]+>/g, "")
+        .replace(/[ \t]+/g, " ")
+        .replace(/\s*\n\s*\n\s*/g, "\n\n")
+        .replace(/[ \t]+\n/g, "\n")
+        .trim();
+      pages.push(text);
+    }
+    state.pdfDoc = { numPages: pages.length, _kind: "epub" };
+    state.pagesText = pages;
+    state.currentPage = 1;
+    els.pageCount.textContent = String(pages.length);
+    els.pageJump.disabled = false;
+    els.pageJump.value = 1;
+    els.pageJump.max = String(pages.length);
+    els.prev.disabled = false;
+    els.next.disabled = false;
+    els.play.disabled = false;
+    const totalChars = pages.reduce((a, t) => a + t.length, 0);
+    const titleMatch = opfText.match(/<dc:title[^>]*>([^<]+)<\/dc:title>/);
+    const title = titleMatch ? titleMatch[1] : file.name;
+    setStatus(
+      `Loaded ${title}: ${pages.length} chapter${pages.length === 1 ? "" : "s"}, ${totalChars} chars.`,
+      "ok"
+    );
+    els.textOut.textContent = pages.map((p, i) => `--- chapter ${i + 1} ---\n${p}`).join("\n\n");
+  } catch (e) {
+    console.error(e);
+    setStatus(`Failed to read EPUB: ${e.message}`, "err");
   }
 }
 
