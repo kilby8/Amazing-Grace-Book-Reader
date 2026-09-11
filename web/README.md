@@ -1,4 +1,4 @@
-# Grace Reader (web)
+# Amazing Grace Reader (web)
 
 Drop a PDF. It reads itself to you. No build step, no install, no native app.
 

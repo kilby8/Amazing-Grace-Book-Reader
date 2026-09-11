@@ -1,4 +1,4 @@
-// Grace Reader - drop a PDF, hear it read aloud.
+// Amazing Grace Reader - drop a PDF or EPUB, hear it read aloud.
 // pdf.js does the text extraction. Two playback engines:
 //   - browser: SpeechSynthesis (zero infra, immediate)
 //   - pocket:  POST to a local pocket-tts server, decode + play via Web Audio
