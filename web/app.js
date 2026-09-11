@@ -438,8 +438,26 @@ els.pageJump.addEventListener("change", () => {
 });
 
 // ----- playback control (engine dispatch) -----
+function findNextPageWithText(startPage) {
+  for (let i = startPage; i <= state.pdfDoc.numPages; i++) {
+    if ((state.pagesText[i - 1] || "").trim().length > 0) return i;
+  }
+  return -1;
+}
+
 function playFromCurrent() {
   if (!state.pdfDoc) return;
+  // Auto-skip empty pages (cover image, blank front matter, etc.) so the
+  // user can just hit Play on a freshly-loaded EPUB without having to
+  // manually click Next past the cover and copyright pages.
+  if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
+    const next = findNextPageWithText(state.currentPage);
+    if (next > 0) {
+      state.currentPage = next;
+      els.pageJump.value = String(next);
+      setStatus(`Skipping to page ${next} \u2014 the current page has no extractable text.`);
+    }
+  }
   if (els.engine.value === "browser") playBrowserFromCurrent();
   else playPocketFromCurrent();
 }
@@ -513,6 +531,19 @@ function playBrowserFromCurrent() {
     setStatus("This browser does not support SpeechSynthesis.", "err");
     return;
   }
+  // Skip past empty pages (cover image, blank front matter) so a freshly-
+  // loaded EPUB with non-text front matter just plays the first chapter.
+  if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
+    const next = findNextPageWithText(state.currentPage);
+    if (next > 0) {
+      state.currentPage = next;
+      els.pageJump.value = String(next);
+      setStatus(`Skipping to page ${next} \u2014 the current page has no extractable text.`);
+    } else {
+      setStatus("No pages with extractable text.", "err");
+      return;
+    }
+  }
   const text = state.pagesText[state.currentPage - 1] || "";
   state.browserQueue = chunkText(text, MAX_CHARS_BROWSER);
   state.browserIndex = 0;
@@ -576,12 +607,25 @@ function playPocketFromCurrent() {
     setStatus("Set a Pocket TTS URL first.", "err");
     return;
   }
+  // Skip past empty pages (cover image, blank front matter) so a freshly-
+  // loaded EPUB with non-text front matter just plays the first chapter.
+  if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
+    const next = findNextPageWithText(state.currentPage);
+    if (next > 0) {
+      state.currentPage = next;
+      els.pageJump.value = String(next);
+      setStatus(`Skipping to page ${next} \u2014 the current page has no extractable text.`);
+    } else {
+      setStatus("No pages with extractable text.", "err");
+      return;
+    }
+  }
   const text = state.pagesText[state.currentPage - 1] || "";
   state.pocketQueue = chunkText(text, MAX_CHARS_POCKET);
   state.pocketIndex = 0;
   state.abortPocket = false;
   // Bump the play token: any in-flight fetchAndDecodeChunk call captured
-  // the previous token and will bail out before polluting the new
+  // the previous token and will bail before polluting the new
   // pocketBuffers with a stale buffer. This is the fix for the
   // "skipping ahead plays the wrong page" race: the old fetch can
   // resolve AFTER the new play has set up its state, and without this
