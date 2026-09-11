@@ -30,9 +30,13 @@ const els = {
   status: $("status"),
   prev: $("prev"),
   play: $("play"),
+  playLabel: $("playLabel"),
+  playIcon: $("playIcon"),
   pause: $("pause"),
   stop: $("stop"),
   next: $("next"),
+  nowReading: $("now-reading"),
+  nrTitle: $("nrTitle"),
   pageJump: $("pageJump"),
   pageCount: $("pageCount"),
   pagePrint: $("pagePrint"),
@@ -61,6 +65,11 @@ const state = {
   // page-list nav (EPUB 3 nav[epub:type=page-list]). Indexed by spine
   // position (1-based). Null for PDFs (no equivalent metadata).
   pagePrintNumbers: null,
+  // Per-chapter title. For EPUBs, parsed from the chapter XHTML <title>
+  // or first heading. For PDFs, falls back to the filename.
+  chapterTitles: null,
+  // Book title (parsed from EPUB dc:title, or the filename).
+  bookTitle: "",
 };
 
 const MAX_CHARS_BROWSER = 220;
@@ -85,9 +94,20 @@ function getAudioCtx() {
 }
 
 // ----- status line -----
+// Updates the topbar status pill. `kind` is one of:
+//   "" (idle/neutral) · "ok" (success) · "err" (error) · "busy" (animating)
 function setStatus(msg, kind = "") {
-  els.status.className = kind;
   els.status.textContent = msg;
+  els.status.dataset.state = kind || "idle";
+}
+
+// ----- now-reading title -----
+// Set the book title shown above the chapter readout. Falls back to the
+// filename if no title was extracted from the document metadata.
+function setNowReadingTitle(bookTitle) {
+  els.nrTitle.textContent = bookTitle || "";
+  // Reveal/hide the now-reading section based on whether we have a title
+  els.nowReading.hidden = !bookTitle;
 }
 
 // ----- page-print badge (EPUB only) -----
@@ -116,6 +136,26 @@ function setCurrentPage(n) {
   state.currentPage = n;
   if (els.pageJump) els.pageJump.value = String(n);
   updatePagePrintBadge();
+  // If we parsed a per-chapter title for this spine position, show it
+  // in the now-reading area; otherwise fall back to the book title.
+  const ct = state.chapterTitles && state.chapterTitles[n - 1];
+  if (ct) setNowReadingTitle(ct);
+  else if (state.bookTitle) setNowReadingTitle(state.bookTitle);
+}
+
+// Updates the Play button to reflect the current playback state. Same
+// button is reused for "Play" (stopped) and "Resume" (paused) - the
+// label and the play/pause icon swap so the affordance stays honest.
+function syncPlayButton() {
+  if (els.playLabel) els.playLabel.textContent = state.isPaused ? "Resume" : "Play";
+  if (els.playIcon) {
+    // Play button is hidden while actively playing (Pause is the action).
+    // Show triangle when stopped or paused.
+    const path = state.isPaused
+      ? '<path d="M8 5v14l11-7L8 5z"/>'
+      : '<path d="M8 5v14l11-7L8 5z"/>';
+    els.playIcon.innerHTML = path;
+  }
 }
 
 // ----- engine-visibility plumbing -----
@@ -252,16 +292,17 @@ async function loadDocument(file) {
 
 async function loadPdfFile(file) {
   if (!file) return;
-  setStatus(`Reading ${file.name} (${(file.size / 1024).toFixed(0)} KB) \u2026`);
+  setStatus(`Reading ${file.name} (${(file.size / 1024).toFixed(0)} KB) \u2026`, "busy");
   try {
     const buf = await file.arrayBuffer();
-    setStatus("Parsing PDF \u2026");
+    setStatus("Parsing PDF \u2026", "busy");
     const doc = await pdfjsLib.getDocument({ data: buf }).promise;
     state.pdfDoc = doc;
     state.pagesText = [];
     state.pagePrintNumbers = null;  // PDFs have no equivalent of the EPUB page-list
+    state.chapterTitles = null;     // PDF chapter titles aren't parsed
     for (let i = 1; i <= doc.numPages; i++) {
-      setStatus(`Extracting text: page ${i} / ${doc.numPages} \u2026`);
+      setStatus(`Extracting text: page ${i} / ${doc.numPages} \u2026`, "busy");
       const page = await doc.getPage(i);
       const tc = await page.getTextContent();
       const text = tc.items
@@ -272,6 +313,16 @@ async function loadPdfFile(file) {
         .trim();
       state.pagesText.push(text);
     }
+    // Try to get a title from PDF metadata; fall back to the filename
+    let bookTitle = file.name.replace(/\.pdf$/i, "");
+    try {
+      const meta = await doc.getMetadata();
+      if (meta && meta.info && typeof meta.info.Title === "string" && meta.info.Title.trim()) {
+        bookTitle = meta.info.Title.trim();
+      }
+    } catch (_) { /* metadata optional */ }
+    state.bookTitle = bookTitle;
+    setNowReadingTitle(bookTitle);
     setCurrentPage(1);
     els.pageCount.textContent = String(doc.numPages);
     els.pageJump.disabled = false;
@@ -281,7 +332,7 @@ async function loadPdfFile(file) {
     els.play.disabled = false;
     const totalChars = state.pagesText.reduce((a, t) => a + t.length, 0);
     setStatus(
-      `Loaded ${file.name}: ${doc.numPages} page${doc.numPages === 1 ? "" : "s"}, ${totalChars} chars.`,
+      `Loaded ${doc.numPages} page${doc.numPages === 1 ? "" : "s"} \u00b7 ${totalChars.toLocaleString()} chars`,
       "ok"
     );
     els.textOut.textContent = state.pagesText.join("\n\n--- page break ---\n\n");
@@ -376,16 +427,18 @@ async function loadEpubFile(file) {
       const base = href.split("/").pop();  // basename of the XHTML file
       return pageNumberByHref[base] || null;
     });
-    // For each spine item, read the XHTML and extract text.
+    // For each spine item, read the XHTML and extract text + chapter title.
     const pages = [];
+    const chapterTitles = [];
     for (let i = 0; i < spineIds.length; i++) {
       const id = spineIds[i];
       const href = items[id];
       const fullPath = opfDir + href;
-      setStatus(`Extracting chapter ${i + 1} / ${spineIds.length} \u2026`);
+      setStatus(`Extracting chapter ${i + 1} / ${spineIds.length} \u2026`, "busy");
       const entry = zip.file(fullPath);
       if (!entry) {
         pages.push("");
+        chapterTitles.push("");
         continue;
       }
       const xhtml = await entry.async("string");
@@ -415,11 +468,34 @@ async function loadEpubFile(file) {
         .replace(/\s*\n\s*\n\s*/g, "\n\n")
         .replace(/[ \t]+\n/g, "\n")
         .trim();
+      // Chapter title: prefer <title>, fall back to first h1/h2/h3.
+      let chapterTitle = "";
+      const titleEl = xhtmlDoc.querySelector("title");
+      if (titleEl && titleEl.textContent.trim()) {
+        chapterTitle = titleEl.textContent.trim();
+      } else {
+        for (const tag of ["h1", "h2", "h3"]) {
+          const h = xhtmlDoc.querySelector(tag);
+          if (h && h.textContent.trim()) {
+            chapterTitle = h.textContent.trim().replace(/\s+/g, " ");
+            break;
+          }
+        }
+      }
       pages.push(text);
+      chapterTitles.push(chapterTitle);
     }
     state.pdfDoc = { numPages: pages.length, _kind: "epub" };
     state.pagesText = pages;
     state.pagePrintNumbers = pagePrintNumbers;
+    state.chapterTitles = chapterTitles;
+    // Book title: prefer EPUB dc:title, fall back to filename without .epub
+    const titleMatch = opfText.match(/<dc:title[^>]*>([^<]+)<\/dc:title>/);
+    const bookTitle = titleMatch
+      ? titleMatch[1].trim()
+      : file.name.replace(/\.epub$/i, "");
+    state.bookTitle = bookTitle;
+    setNowReadingTitle(bookTitle);
     setCurrentPage(1);
     els.pageCount.textContent = String(pages.length);
     els.pageJump.disabled = false;
@@ -428,10 +504,8 @@ async function loadEpubFile(file) {
     els.next.disabled = false;
     els.play.disabled = false;
     const totalChars = pages.reduce((a, t) => a + t.length, 0);
-    const titleMatch = opfText.match(/<dc:title[^>]*>([^<]+)<\/dc:title>/);
-    const title = titleMatch ? titleMatch[1] : file.name;
     setStatus(
-      `Loaded ${title}: ${pages.length} chapter${pages.length === 1 ? "" : "s"}, ${totalChars} chars.`,
+      `Loaded ${pages.length} chapter${pages.length === 1 ? "" : "s"} \u00b7 ${totalChars.toLocaleString()} chars`,
       "ok"
     );
     els.textOut.textContent = pages.map((p, i) => {
@@ -554,6 +628,7 @@ function pauseInternal() {
   state.isPlaying = false;
   els.play.disabled = false;
   els.pause.disabled = true;
+  syncPlayButton();
 }
 
 function resumeInternal() {
@@ -564,12 +639,14 @@ function resumeInternal() {
     state.isPlaying = true;
     els.play.disabled = true;
     els.pause.disabled = false;
+    syncPlayButton();
   } else if (audioCtx && audioCtx.state === "suspended") {
     audioCtx.resume().then(() => {
       state.isPaused = false;
       state.isPlaying = true;
       els.play.disabled = true;
       els.pause.disabled = false;
+      syncPlayButton();
     }).catch((e) => {
       setStatus(`Pocket resume error: ${e.message}`, "err");
       stopInternal();
@@ -602,6 +679,7 @@ async function stopInternal() {
   state.isPaused = false;
   els.play.disabled = !state.pdfDoc;
   els.pause.disabled = true;
+  syncPlayButton();
 }
 
 // ----- browser TTS playback -----
@@ -629,12 +707,13 @@ function playBrowserFromCurrent() {
     setStatus(`Page ${state.currentPage} has no extractable text.`, "err");
     return;
   }
-  setStatus(`Reading page ${state.currentPage} (browser TTS) \u2026`);
+  setStatus(`Reading page ${state.currentPage} (browser TTS) \u2026`, "busy");
   state.isPlaying = true;
   state.isPaused = false;
   els.play.disabled = true;
   els.pause.disabled = false;
   els.stop.disabled = false;
+  syncPlayButton();
   speakNextBrowserChunk();
 }
 
@@ -717,12 +796,13 @@ function playPocketFromCurrent() {
     setStatus(`Page ${state.currentPage} has no extractable text.`, "err");
     return;
   }
-  setStatus(`Reading page ${state.currentPage} via Pocket TTS \u2026`);
+  setStatus(`Reading page ${state.currentPage} via Pocket TTS \u2026`, "busy");
   state.isPlaying = true;
   state.isPaused = false;
   els.play.disabled = true;
   els.pause.disabled = false;
   els.stop.disabled = false;
+  syncPlayButton();
   // Web Audio API: create or resume the AudioContext synchronously in
   // the click handler so the user-gesture activation is honored. The
   // fetch to pocket-tts is async; resume() before fetch keeps the
@@ -799,6 +879,7 @@ function playNextPocketChunk() {
       state.isPlaying = false;
       els.play.disabled = !state.pdfDoc;
       els.pause.disabled = true;
+      syncPlayButton();
     }
     return;
   }
@@ -860,4 +941,5 @@ function playDecodedChunk(buffer) {
 // ----- initial UI state -----
 applyEngineVisibility();
 els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}\u00d7`;
+syncPlayButton();
 setStatus("Drop a PDF to start.");
