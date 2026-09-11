@@ -54,6 +54,8 @@ const state = {
   pocketBuffers: [],       // pre-decoded AudioBuffer per chunk (gaps out the stutter)
   pocketBase: "",          // base URL of the pocket-tts server
   abortPocket: false,
+  pocketPlayToken: 0,      // increments each time playPocketFromCurrent runs; in-flight
+                           // fetches capture this and bail if a newer play has started
 };
 
 const MAX_CHARS_BROWSER = 220;
@@ -379,6 +381,9 @@ async function stopInternal() {
     if (audioCtx && audioCtx.state === "running") {
       try { await audioCtx.suspend(); } catch (_) {}
     }
+    // Drop any decoded buffers from the old play. Even if a fetch
+    // slipped past the abort check (or already finished before the
+    // await), the array is fresh for the new playPocketFromCurrent.
     state.pocketQueue = [];
     state.pocketIndex = 0;
     state.pocketBuffers = [];
@@ -462,6 +467,14 @@ function playPocketFromCurrent() {
   state.pocketQueue = chunkText(text, MAX_CHARS_POCKET);
   state.pocketIndex = 0;
   state.abortPocket = false;
+  // Bump the play token: any in-flight fetchAndDecodeChunk call captured
+  // the previous token and will bail out before polluting the new
+  // pocketBuffers with a stale buffer. This is the fix for the
+  // "skipping ahead plays the wrong page" race: the old fetch can
+  // resolve AFTER the new play has set up its state, and without this
+  // check the old page's audio would land in pocketBuffers[0] and
+  // play.
+  state.pocketPlayToken = (state.pocketPlayToken || 0) + 1;
   // Pre-decoded AudioBuffer for each chunk. Filled lazily as the fetches
   // complete. Pre-fetching the next chunk while the current one plays
   // eliminates the ~1s inter-chunk gap.
@@ -486,17 +499,25 @@ function playPocketFromCurrent() {
   // playNextPocketChunk, which checks the buffer and either plays it
   // (if ready) or awaits it. onended then chains through the rest,
   // and the post-play hook in playDecodedChunk pre-fetches chunk N+1.
+  const myToken = state.pocketPlayToken;
   fetchAndDecodeChunk(0)
     .then(() => {
       if (state.abortPocket) return;
+      if (state.pocketPlayToken !== myToken) return;
       playNextPocketChunk();
     })
     .catch(() => { /* error already surfaced in fetchAndDecodeChunk */ });
 }
 
 // Fetch + decode a single chunk into state.pocketBuffers[index].
-// Resolves with the buffer on success, rejects on error.
+// Resolves with the buffer on success, rejects on error. The caller
+// is responsible for kicking off the playback chain; this function
+// only fills the buffer slot.
 async function fetchAndDecodeChunk(index) {
+  // Capture the play token at entry. If a newer playPocketFromCurrent
+  // has bumped the token, we're a stale fetch and must bail before
+  // we touch pocketBuffers.
+  const myToken = state.pocketPlayToken;
   if (state.abortPocket) return;
   if (state.pocketBuffers[index]) return state.pocketBuffers[index];
   const chunk = state.pocketQueue[index];
@@ -506,22 +527,25 @@ async function fetchAndDecodeChunk(index) {
   if (voice) form.append("voice_url", voice);
   try {
     const r = await fetch(`${state.pocketBase}/tts`, { method: "POST", body: form });
+    if (state.abortPocket || state.pocketPlayToken !== myToken) return;
     if (!r.ok) {
       const body = await r.text().catch(() => "");
       throw new Error(`HTTP ${r.status}: ${body || r.statusText}`);
     }
     const arrayBuffer = await r.arrayBuffer();
-    if (state.abortPocket) return;
+    if (state.abortPocket || state.pocketPlayToken !== myToken) return;
     const ctx = getAudioCtx();
     if (ctx.state === "suspended") {
       try { await ctx.resume(); } catch (_) {}
     }
     const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
-    if (state.abortPocket) return;
+    if (state.abortPocket || state.pocketPlayToken !== myToken) return;
     state.pocketBuffers[index] = buffer;
     return buffer;
   } catch (e) {
-    if (!state.abortPocket) {
+    // Only surface the error if we're still the active play. A stale
+    // fetch that errors should silently disappear.
+    if (!state.abortPocket && state.pocketPlayToken === myToken) {
       setStatus(`Pocket TTS request failed: ${e.message}`, "err");
       state.isPlaying = false;
       els.play.disabled = !state.pdfDoc;
@@ -562,9 +586,12 @@ function playNextPocketChunk() {
     setStatus(
       `Pocket TTS: loading chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`
     );
+    const myToken = state.pocketPlayToken;
     fetchAndDecodeChunk(state.pocketIndex)
       .then((buf) => {
-        if (state.abortPocket || !buf) return;
+        if (state.abortPocket) return;
+        if (state.pocketPlayToken !== myToken) return;
+        if (!buf) return;
         playDecodedChunk(buf);
         const nextIdx = state.pocketIndex + 1;
         if (nextIdx < state.pocketQueue.length && !state.pocketBuffers[nextIdx]) {
