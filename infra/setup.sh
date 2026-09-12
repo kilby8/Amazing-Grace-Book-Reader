@@ -173,11 +173,44 @@ YOUR.DOMAIN {
 }
 CADDYEOF
 
+# Resolve the domain. Priority:
+#   1. CADDY_DOMAIN env var (explicit, e.g. reader.your-domain.com)
+#   2. DUCKDNS_DOMAIN env var (free DuckDNS subdomain)
+#   3. Leave YOUR.DOMAIN in place and warn.
+RESOLVED_DOMAIN=""
 if [[ -n "${CADDY_DOMAIN:-}" && "${CADDY_DOMAIN}" != "YOUR.DOMAIN" ]]; then
-  sudo sed -i "s/YOUR.DOMAIN/${CADDY_DOMAIN}/g" /etc/caddy/Caddyfile
+  RESOLVED_DOMAIN="$CADDY_DOMAIN"
+elif [[ -n "${DUCKDNS_DOMAIN:-}" ]]; then
+  RESOLVED_DOMAIN="${DUCKDNS_DOMAIN}.duckdns.org"
+fi
+
+if [[ -n "$RESOLVED_DOMAIN" ]]; then
+  sudo sed -i "s/YOUR.DOMAIN/${RESOLVED_DOMAIN}/g" /etc/caddy/Caddyfile
   sudo systemctl reload caddy
+  say "Caddy serving https://${RESOLVED_DOMAIN}"
 else
-  say "WARNING: set CADDY_DOMAIN in env or edit /etc/caddy/Caddyfile, then run: sudo systemctl reload caddy"
+  say "WARNING: set CADDY_DOMAIN or DUCKDNS_DOMAIN, then run: sudo systemctl reload caddy"
+fi
+
+# 13. DuckDNS cron (only if DUCKDNS_DOMAIN is set)
+if [[ -n "${DUCKDNS_DOMAIN:-}" ]]; then
+  say "Configuring DuckDNS auto-update"
+  sudo mkdir -p /etc/amazing-grace
+  sudo tee /etc/amazing-grace/duckdns.env >/dev/null <<EOF
+DUCKDNS_DOMAIN=${DUCKDNS_DOMAIN}
+DUCKDNS_TOKEN=${DUCKDNS_TOKEN:-}
+DUCKDNS_INTERFACE=${DUCKDNS_INTERFACE:-eth0}
+EOF
+  sudo chmod 600 /etc/amazing-grace/duckdns.env
+  sudo cp "$APP_DIR/infra/duckdns-update.cron" /etc/cron.d/duckdns-update
+  sudo chmod 644 /etc/cron.d/duckdns-update
+  sudo systemctl restart cron
+  if [[ -n "${DUCKDNS_TOKEN:-}" ]]; then
+    # Run it once now so the A record is current before Caddy asks for the cert.
+    sudo bash "$APP_DIR/infra/duckdns-update.sh" || say "WARNING: DuckDNS update failed; check /var/log/duckdns-update.log"
+  else
+    say "WARNING: DUCKDNS_TOKEN not set; the cron will fail until you put a token in /etc/amazing-grace/duckdns.env"
+  fi
 fi
 
 say "Done. Health check:"

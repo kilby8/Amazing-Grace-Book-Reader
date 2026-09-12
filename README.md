@@ -42,9 +42,11 @@ node server.js          # listens on http://127.0.0.1:8770
   Tailscale-attached box.
 - Tailscale Funnel / ngrok — `tailscale funnel --bg 8770` and friends can
   hit it without a tailnet.
-- Self-host behind Caddy — `caddy reverse-proxy --from your.domain --to
-  127.0.0.1:8770` for a real public URL. Set `SESSION_SECRET` to a random
-  value and flip `cookie.secure` to `true` in `server.js`.
+- Self-host on a VPS — `infra/setup.sh` provisions Ubuntu 24.04 with
+  Caddy, UFW, fail2ban, and the systemd unit. Two recipes:
+  - [`DEPLOY.md`](./DEPLOY.md) — Hetzner / DO / Vultr ($3-10/mo) with a real domain
+  - [`DEPLOY-oracle.md`](./DEPLOY-oracle.md) — Oracle Cloud Always Free (ARM VM, $0) + DuckDNS free subdomain
+- Standalone Caddy on this box — `caddy reverse-proxy --from your.domain --to 127.0.0.1:8770`. Set `SESSION_SECRET` to a random value and flip `cookie.secure` to `true` in `server.js`.
 
 **Tests:**
 - `node test-library.mjs` — register/login/upload/per-user isolation/delete (26 checks)
