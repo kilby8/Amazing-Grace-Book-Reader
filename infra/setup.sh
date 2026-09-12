@@ -4,7 +4,10 @@
 # Idempotent: safe to re-run.
 set -euo pipefail
 
-DEPLOY_USER="${DEPLOY_USER:-agr}"
+# Default to the SSH user you ran setup.sh as. Oracle Cloud Ubuntu images use
+# `ubuntu`, AWS AMIs use `ec2-user`/`ubuntu`, GCP uses the chosen username, etc.
+# Override with DEPLOY_USER=... if you want to rename.
+DEPLOY_USER="${DEPLOY_USER:-${SUDO_USER:-$USER}}"
 APP_DIR="/opt/amazing-grace"
 REPO_URL="${REPO_URL:-https://github.com/kilby8/Amazing-Grace-Book-Reader.git}"
 REPO_BRANCH="${REPO_BRANCH:-feat/pdf-pocket-tts}"
@@ -30,6 +33,23 @@ sudo ufw allow 22/tcp comment "ssh"
 sudo ufw allow 80/tcp comment "http -> caddy"
 sudo ufw allow 443/tcp comment "https -> caddy"
 sudo ufw --force enable
+
+# 2a. Strip the cloud-image REJECT rules from /etc/iptables/rules.v4.
+# Some cloud images (notably Oracle Cloud Ubuntu 24.04) ship a hardcoded
+# REJECT-all rule ABOVE the ufw-before-input chain in /etc/iptables/rules.v4.
+# That REJECT matches and drops every non-22 packet before UFW's per-port
+# rules (80/443) are ever evaluated, so traffic that UFW allows still never
+# reaches Caddy. Drop those two REJECT rules from the cloud-image file so
+# UFW's ufw-reject-input (at the tail of ufw-before-input) becomes the real
+# default-deny. Apply to the live chain now and persist for next boot.
+if sudo grep -qE '^-A INPUT -j REJECT --reject-with icmp-host-prohibited$' /etc/iptables/rules.v4 2>/dev/null \
+   || sudo grep -qE '^-A FORWARD -j REJECT --reject-with icmp-host-prohibited$' /etc/iptables/rules.v4 2>/dev/null; then
+  say "Removing cloud-image REJECT rules that shadow UFW"
+  sudo iptables -D INPUT  -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || true
+  sudo iptables -D FORWARD -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || true
+  sudo sed -i '/^-A INPUT -j REJECT --reject-with icmp-host-prohibited$/d'  /etc/iptables/rules.v4
+  sudo sed -i '/^-A FORWARD -j REJECT --reject-with icmp-host-prohibited$/d' /etc/iptables/rules.v4
+fi
 
 # 3. Caddy via the official repo
 if ! command -v caddy >/dev/null; then
