@@ -11,7 +11,8 @@
 // Tables:
 //   users:  id, username (unique), password_hash (bcrypt), created_at
 //   books:  id, user_id (fk), title, author, kind ('pdf'|'epub'),
-//           filename (on disk, sanitized), size, added_at, last_opened_at
+//           filename (on disk, sanitized), size, added_at, last_opened_at,
+//           visibility ('private'|'public'), shared_at (ms; null while private)
 //
 // Per-user isolation: every book query is scoped by user_id. The requireAuth
 // middleware ensures the session is present; controllers additionally filter
@@ -55,6 +56,21 @@ function getDb() {
     );
     CREATE INDEX IF NOT EXISTS books_user_id_idx ON books(user_id);
   `);
+  // ----- Migrations -----
+  // Idempotent: skip columns that already exist so re-running getDb() is safe.
+  const bookCols = new Set(_db.prepare("PRAGMA table_info(books)").all().map((c) => c.name));
+  if (!bookCols.has("visibility")) {
+    _db.exec(
+      "ALTER TABLE books ADD COLUMN visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private','public'))"
+    );
+  }
+  if (!bookCols.has("shared_at")) {
+    _db.exec("ALTER TABLE books ADD COLUMN shared_at INTEGER");
+  }
+  // Partial index for the public feed (only rows where it matters).
+  _db.exec(
+    "CREATE INDEX IF NOT EXISTS books_public_shared_idx ON books(visibility, shared_at DESC) WHERE visibility = 'public'"
+  );
   return _db;
 }
 

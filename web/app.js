@@ -47,6 +47,13 @@ const els = {
   bookGrid: $("bookGrid"),
   libraryEmpty: $("libraryEmpty"),
   backToLibrary: $("backToLibrary"),
+  browsePublicBtn: $("browsePublicBtn"),
+
+  // Public-library screen
+  publicScreen: $("publicScreen"),
+  publicGrid: $("publicGrid"),
+  publicEmpty: $("publicEmpty"),
+  backFromPublic: $("backFromPublic"),
 
   // Reader screen
   engine: $("engine"),
@@ -84,7 +91,8 @@ const state = {
   user: null,                    // { id, username } | null
   screen: "loading",             // "loading" | "auth" | "library" | "reader"
   // Library
-  books: [],                     // [{id,title,author,kind,size,added_at,last_opened_at}]
+  books: [],                     // [{id,title,author,kind,size,added_at,last_opened_at,visibility,shared_at}]
+  publicBooks: [],               // [{id,title,author,kind,size,shared_at,shared_by}]
   // Reader
   pdfDoc: null,
   pagesText: [],
@@ -136,14 +144,15 @@ function setStatus(msg, kind = "") {
 // ----- Screen routing -----
 function showScreen(name) {
   state.screen = name;
-  for (const s of [els.authScreen, els.libraryScreen, els.readerScreen]) {
+  for (const s of [els.authScreen, els.libraryScreen, els.publicScreen, els.readerScreen]) {
     if (!s) continue;
     s.hidden = true;
   }
   if (name === "auth" && els.authScreen) els.authScreen.hidden = false;
   if (name === "library" && els.libraryScreen) els.libraryScreen.hidden = false;
+  if (name === "public" && els.publicScreen) els.publicScreen.hidden = false;
   if (name === "reader" && els.readerScreen) els.readerScreen.hidden = false;
-  els.logoutBtn.hidden = !(state.user && (name === "library" || name === "reader"));
+  els.logoutBtn.hidden = !(state.user && (name === "library" || name === "public" || name === "reader"));
 }
 
 function setNowReadingTitle(bookTitle) {
@@ -274,6 +283,7 @@ function renderLibrary() {
     const li = document.createElement("li");
     li.className = "book-card";
     li.dataset.id = String(b.id);
+    const isPublic = b.visibility === "public";
     const kindLabel = b.kind.toUpperCase();
     const sizeKB = (b.size / 1024).toFixed(0);
     const dateStr = new Date(b.added_at).toLocaleDateString();
@@ -286,6 +296,11 @@ function renderLibrary() {
           <p class="book-card-meta">${sizeKB} KB &middot; ${escapeHtml(dateStr)}</p>
         </div>
       </button>
+      <button class="book-card-share" data-id="${b.id}" aria-pressed="${isPublic}" aria-label="${isPublic ? "Make private" : "Share publicly"}" title="${isPublic ? "Public — anyone signed in can read it" : "Private — only you can read it"}">
+        <svg class="book-card-share-icon-private" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        <svg class="book-card-share-icon-public" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
+        <span class="book-card-share-label">${isPublic ? "Public" : "Private"}</span>
+      </button>
       <button class="book-card-del" data-id="${b.id}" aria-label="Delete ${escapeHtml(b.title)}" title="Remove from library">
         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
       </button>
@@ -296,6 +311,20 @@ function renderLibrary() {
     btn.addEventListener("click", () => {
       const id = Number(btn.dataset.id);
       openBookFromLibrary(id);
+    });
+  });
+  els.bookGrid.querySelectorAll(".book-card-share").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const id = Number(btn.dataset.id);
+      const book = state.books.find((b) => b.id === id);
+      if (!book) return;
+      const target = book.visibility === "public" ? "private" : "public";
+      try {
+        await setBookVisibility(id, target);
+      } catch (err) {
+        setStatus(`Could not change sharing: ${err.message}`, "err");
+      }
     });
   });
   els.bookGrid.querySelectorAll(".book-card-del").forEach((btn) => {
@@ -316,6 +345,40 @@ function renderLibrary() {
       }
     });
   });
+}
+
+// Toggle a book's visibility. Optimistic: flip the local state and re-render
+// immediately, then revert on error.
+async function setBookVisibility(id, visibility) {
+  const book = state.books.find((b) => b.id === id);
+  if (!book) return;
+  const prevVisibility = book.visibility;
+  const prevSharedAt = book.shared_at;
+  book.visibility = visibility;
+  book.shared_at = visibility === "public" ? Date.now() : null;
+  renderLibrary();
+  try {
+    const res = await api(`/api/books/${id}/visibility`, {
+      method: "POST",
+      body: JSON.stringify({ visibility }),
+    });
+    // Trust the server's shared_at so clocks stay consistent.
+    if (res && typeof res.shared_at !== "undefined") {
+      book.shared_at = res.shared_at;
+    }
+    setStatus(
+      visibility === "public"
+        ? `Shared "${book.title}" with the public library`
+        : `Made "${book.title}" private`,
+      "ok"
+    );
+  } catch (err) {
+    // Revert on failure.
+    book.visibility = prevVisibility;
+    book.shared_at = prevSharedAt;
+    renderLibrary();
+    throw err;
+  }
 }
 
 function escapeHtml(s) {
@@ -380,6 +443,86 @@ els.filePicker.addEventListener("change", (e) => {
   if (f) uploadFile(f);
   e.target.value = "";
 });
+
+// ----- Public library -----
+async function loadPublicLibrary() {
+  try {
+    const { books } = await api("/api/public-books");
+    state.publicBooks = books;
+    renderPublicLibrary();
+  } catch (e) {
+    setStatus(`Could not load public library: ${e.message}`, "err");
+  }
+}
+
+function renderPublicLibrary() {
+  if (!els.publicGrid) return;
+  els.publicGrid.innerHTML = "";
+  els.publicEmpty.hidden = state.publicBooks.length > 0;
+  if (state.publicBooks.length === 0) return;
+  for (const b of state.publicBooks) {
+    const li = document.createElement("li");
+    li.className = "book-card";
+    li.dataset.id = String(b.id);
+    const kindLabel = b.kind.toUpperCase();
+    const sizeKB = (b.size / 1024).toFixed(0);
+    const sharedStr = b.shared_at ? new Date(b.shared_at).toLocaleDateString() : "";
+    li.innerHTML = `
+      <button class="book-card-open" data-id="${b.id}" aria-label="Open ${escapeHtml(b.title)}">
+        <div class="book-card-mark" aria-hidden="true">${escapeHtml(kindLabel)}</div>
+        <div class="book-card-body">
+          <h3 class="book-card-title">${escapeHtml(b.title)}</h3>
+          ${b.author ? `<p class="book-card-author">${escapeHtml(b.author)}</p>` : ""}
+          <p class="book-card-meta">${sizeKB} KB &middot; shared by <span class="book-card-sharedby">@${escapeHtml(b.shared_by || "")}</span>${sharedStr ? " &middot; " + escapeHtml(sharedStr) : ""}</p>
+        </div>
+      </button>
+    `;
+    els.publicGrid.appendChild(li);
+  }
+  els.publicGrid.querySelectorAll(".book-card-open").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const id = Number(btn.dataset.id);
+      openBookFromPublicLibrary(id);
+    });
+  });
+}
+
+async function openBookFromPublicLibrary(id) {
+  const book = state.publicBooks.find((b) => b.id === id);
+  if (!book) {
+    setStatus("Book not found in public library", "err");
+    return;
+  }
+  setStatus(`Loading "${book.title}"…`, "busy");
+  try {
+    const res = await fetch(`/api/books/${id}/file`, { credentials: "same-origin" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const blob = await res.blob();
+    const file = new File([blob], `${book.title}.${book.kind}`, { type: blob.type });
+    state.currentBookId = id;
+    showScreen("reader");
+    applyEngineVisibility();
+    syncPlayButton();
+    await loadDocument(file);
+  } catch (e) {
+    setStatus(`Could not open book: ${e.message}`, "err");
+  }
+}
+
+if (els.browsePublicBtn) {
+  els.browsePublicBtn.addEventListener("click", async () => {
+    setStatus("Loading public library…", "busy");
+    showScreen("public");
+    await loadPublicLibrary();
+    setStatus("Browsing public library");
+  });
+}
+if (els.backFromPublic) {
+  els.backFromPublic.addEventListener("click", async () => {
+    showScreen("library");
+    setStatus("Back to library");
+  });
+}
 
 els.backToLibrary.addEventListener("click", async () => {
   // Stop playback before leaving the reader

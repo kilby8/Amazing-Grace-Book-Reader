@@ -275,21 +275,69 @@ app.get("/api/books", requireAuth, (req, res) => {
   const db = getDb();
   const books = db
     .prepare(
-      "SELECT id, title, author, kind, size, added_at, last_opened_at FROM books WHERE user_id = ? ORDER BY added_at DESC"
+      "SELECT id, title, author, kind, size, added_at, last_opened_at, visibility, shared_at FROM books WHERE user_id = ? ORDER BY added_at DESC"
     )
     .all(req.session.userId);
   res.json({ books });
+});
+
+// ----- Public library -----
+// Authenticated users only. Lists every book marked public across all users,
+// joined with the uploader's username so the UI can show "Shared by @...".
+// Sorted by shared_at DESC so the most recent shares surface first.
+app.get("/api/public-books", requireAuth, (req, res) => {
+  const db = getDb();
+  const books = db
+    .prepare(
+      `SELECT b.id, b.title, b.author, b.kind, b.size, b.shared_at,
+              u.username AS shared_by
+       FROM books b
+       JOIN users u ON u.id = b.user_id
+       WHERE b.visibility = 'public'
+       ORDER BY b.shared_at DESC, b.id DESC`
+    )
+    .all();
+  res.json({ books });
+});
+
+// Toggle a book's visibility. Owner-only; idempotent.
+app.post("/api/books/:id/visibility", requireAuth, (req, res) => {
+  const db = getDb();
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "Bad id" });
+  const visibility = req.body && req.body.visibility;
+  if (visibility !== "private" && visibility !== "public") {
+    return res.status(400).json({ error: "visibility must be 'private' or 'public'" });
+  }
+  const book = db
+    .prepare("SELECT id, user_id FROM books WHERE id = ?")
+    .get(id);
+  if (!book) return res.status(404).json({ error: "Not found" });
+  if (book.user_id !== req.session.userId) {
+    return res.status(403).json({ error: "Not your book" });
+  }
+  // shared_at is set when promoting to public, cleared when demoting.
+  const sharedAt = visibility === "public" ? Date.now() : null;
+  db.prepare(
+    "UPDATE books SET visibility = ?, shared_at = ? WHERE id = ?"
+  ).run(visibility, sharedAt, id);
+  res.json({ ok: true, visibility, shared_at: sharedAt });
 });
 
 app.get("/api/books/:id/file", requireAuth, (req, res) => {
   const db = getDb();
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: "Bad id" });
+  // Owner check is conditional: public books are readable by any logged-in user.
   const book = db
-    .prepare("SELECT id, kind, filename FROM books WHERE id = ? AND user_id = ?")
-    .get(id, req.session.userId);
+    .prepare("SELECT id, user_id, kind, filename, visibility FROM books WHERE id = ?")
+    .get(id);
   if (!book) return res.status(404).json({ error: "Not found" });
-  const filePath = path.join(BOOKS_DIR, String(req.session.userId), book.filename);
+  const isOwner = book.user_id === req.session.userId;
+  const isPublic = book.visibility === "public";
+  if (!isOwner && !isPublic) return res.status(404).json({ error: "Not found" });
+  // Path is always scoped to the OWNER's directory (files never move when shared).
+  const filePath = path.join(BOOKS_DIR, String(book.user_id), book.filename);
   // path.join already constrains to BOOKS_DIR; double-check before sending
   const resolved = path.resolve(filePath);
   if (!resolved.startsWith(path.resolve(BOOKS_DIR) + path.sep) && resolved !== path.resolve(BOOKS_DIR)) {
@@ -298,7 +346,11 @@ app.get("/api/books/:id/file", requireAuth, (req, res) => {
   if (!fs.existsSync(resolved)) {
     return res.status(404).json({ error: "File missing on disk" });
   }
-  db.prepare("UPDATE books SET last_opened_at = ? WHERE id = ?").run(Date.now(), book.id);
+  // Only the owner's own reads count as "last opened" - opening a public
+  // book shouldn't update the owner's library state.
+  if (isOwner) {
+    db.prepare("UPDATE books SET last_opened_at = ? WHERE id = ?").run(Date.now(), book.id);
+  }
   res.setHeader("Content-Type", book.kind === "pdf" ? "application/pdf" : "application/epub+zip");
   fs.createReadStream(resolved).pipe(res);
 });

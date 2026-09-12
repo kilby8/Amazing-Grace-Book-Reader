@@ -129,6 +129,39 @@
           <p class="muted">Drop a PDF or EPUB above to get started.</p>
         </div>
 
+        <div class="library-foot">
+          <button id="browsePublicBtn" type="button" class="btn btn-ghost">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 0 20"/><path d="M12 2a15 15 0 0 0 0 20"/></svg>
+            <span>Browse public library</span>
+          </button>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============== PUBLIC LIBRARY SCREEN ============== -->
+    <section id="publicScreen" class="screen" aria-label="Public library" hidden>
+      <div class="library-inner">
+
+        <div class="library-head">
+          <div>
+            <p class="library-eyebrow">Public library</p>
+            <h2 class="library-greeting" id="publicGreeting">Books shared by everyone.</h2>
+          </div>
+          <div class="library-actions">
+            <button id="backFromPublic" type="button" class="btn btn-ghost">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+              <span>Back to library</span>
+            </button>
+          </div>
+        </div>
+
+        <ul id="publicGrid" class="book-grid" aria-live="polite"></ul>
+        <div id="publicEmpty" class="library-empty" hidden>
+          <p>Nothing has been shared yet.</p>
+          <p class="muted">Make one of your books public to start the library.</p>
+        </div>
+
       </div>
     </section>
 

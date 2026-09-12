@@ -960,6 +960,58 @@ a:hover { text-decoration: underline; }
 .book-card-del:hover { color: var(--color-err); background: oklch(94% 0.04 25); }
 .book-card-del:focus-visible { outline: none; color: var(--color-err); }
 
+/* ----- Visibility toggle on each book card ----- */
+.book-card-share {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-fg-muted);
+  border-radius: 999px;
+  font: inherit;
+  font-size: var(--text-xs);
+  cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
+  white-space: nowrap;
+}
+.book-card-share:hover {
+  color: var(--color-fg);
+  border-color: var(--color-border-strong, var(--color-fg-muted));
+}
+.book-card-share:focus-visible {
+  outline: none;
+  border-color: var(--color-fg);
+  color: var(--color-fg);
+}
+/* Public state: warm gold accent that matches the brand */
+.book-card-share[aria-pressed="true"] {
+  color: var(--color-accent, #b07a2a);
+  border-color: var(--color-accent, #b07a2a);
+  background: oklch(96% 0.04 75);
+}
+.book-card-share[aria-pressed="true"]:hover {
+  background: oklch(92% 0.06 75);
+}
+/* Swap which lock icon is shown */
+.book-card-share .book-card-share-icon-public { display: none; }
+.book-card-share[aria-pressed="true"] .book-card-share-icon-private { display: none; }
+.book-card-share[aria-pressed="true"] .book-card-share-icon-public { display: inline-block; }
+
+/* ----- Public-library meta line ("shared by @username") ----- */
+.book-card-sharedby {
+  font-weight: 600;
+  color: var(--color-fg);
+}
+
+/* ----- Library footer (Browse public library link) ----- */
+.library-foot {
+  margin-top: var(--space-5);
+  display: flex;
+  justify-content: center;
+}
+
 .library-empty {
   text-align: center;
   padding: var(--space-7) var(--space-5);
