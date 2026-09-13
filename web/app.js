@@ -77,6 +77,8 @@ const els = {
   pause: $("pause"),
   stop: $("stop"),
   next: $("next"),
+  audioPos: $("audioPos"),
+  audioPosLabel: $("audioPosLabel"),
   nowReading: $("now-reading"),
   nrTitle: $("nrTitle"),
   pageJump: $("pageJump"),
@@ -112,6 +114,14 @@ const state = {
   elevenLabsBuffers: [],
   abortElevenLabs: false,
   elevenLabsPlayToken: 0,
+  // Guards source.onended from advancing the chunk index when the user
+  // paused via audioCtx.suspend(). Chrome fires onended synthetically on
+  // suspend, which used to make pause→play jump to the next chunk instead
+  // of resuming the paused one.
+  audioCtxSuspended: false,
+  // True while the user is mid-drag on the position slider so the ticker
+  // doesn't fight their pointer.
+  isDraggingSlider: false,
   pagePrintNumbers: null,
   chapterTitles: null,
   bookTitle: "",
@@ -870,6 +880,11 @@ function applyEngineVisibility() {
   els.pocketVoiceRow.hidden = !isPocket;
   els.elevenLabsRow.hidden = !isElevenLabs;
   els.browserVoiceRow.hidden = isPocket || isElevenLabs;
+  // The position slider needs a per-chunk buffer to be useful, which
+  // only Pocket and ElevenLabs produce. Browser TTS has no buffer, so
+  // the slider is disabled and shows "—".
+  setAudioSliderDisabled(v === "browser");
+  if (v === "browser") resetAudioPosUI();
 }
 
 // ----- ElevenLabs health probe (server has the key; we just check the route) -----
@@ -1024,6 +1039,10 @@ function playFromCurrent() {
       setStatus(`Skipping to page ${next} \u2014 the current page has no extractable text.`);
     }
   }
+  // Start the position ticker before dispatching to the engine — it
+  // covers both the active engine and the browser-engine disabled state
+  // (no-op for browser since applyEngineVisibility disabled the slider).
+  startPosTicker();
   if (els.engine.value === "browser") playBrowserFromCurrent();
   else if (els.engine.value === "elevenlabs") playElevenLabsFromCurrent();
   else playPocketFromCurrent();
@@ -1034,6 +1053,10 @@ function pauseInternal() {
   if (els.engine.value === "browser") {
     window.speechSynthesis.pause();
   } else if (audioCtx && audioCtx.state === "running") {
+    // Set the suspension guard BEFORE suspend() so any source.onended that
+    // fires synchronously during suspension bails out instead of advancing
+    // to the next chunk. Cleared in resumeInternal() once resume() resolves.
+    state.audioCtxSuspended = true;
     try { audioCtx.suspend(); } catch (_) {}
   }
   state.isPaused = true;
@@ -1054,15 +1077,24 @@ function resumeInternal() {
     syncPlayButton();
   } else if (audioCtx && audioCtx.state === "suspended") {
     audioCtx.resume().then(() => {
+      // Clear the guard only after the context is actually running again,
+      // so a synthetic onended fired during the resume call can't slip past
+      // it either.
+      state.audioCtxSuspended = false;
       state.isPaused = false;
       state.isPlaying = true;
       els.play.disabled = true;
       els.pause.disabled = false;
       syncPlayButton();
     }).catch((e) => {
+      state.audioCtxSuspended = false;
       setStatus(`Audio resume error: ${e.message}`, "err");
       stopInternal();
     });
+  } else {
+    // audioCtx is already running (e.g. user clicked Resume twice) — clear
+    // the guard so future onended handlers advance correctly.
+    state.audioCtxSuspended = false;
   }
 }
 
@@ -1089,11 +1121,14 @@ async function stopInternal() {
     state.elevenLabsIndex = 0;
     state.elevenLabsBuffers = [];
   }
+  state.audioCtxSuspended = false;
   state.isPlaying = false;
   state.isPaused = false;
   els.play.disabled = !state.pdfDoc;
   els.pause.disabled = true;
   syncPlayButton();
+  stopPosTicker();
+  resetAudioPosUI();
 }
 
 function playBrowserFromCurrent() {
@@ -1299,10 +1334,18 @@ function playDecodedChunk(buffer) {
   source.playbackRate.value = Number(els.speed.value) || 1.0;
   source.connect(ctx.destination);
   pocketSource = source;
+  // Stash the audioCtx timestamp at start so the position ticker can
+  // compute elapsed time within this chunk (accounting for current speed).
+  source._startCtxTime = ctx.currentTime;
   source.onended = () => {
     if (pocketSource !== source) return;
     pocketSource = null;
     if (state.abortPocket) return;
+    // Chrome fires source.onended synchronously when audioCtx.suspend() runs;
+    // without this guard the chunk index would advance during pause, and
+    // the next resume would play the FOLLOWING chunk from offset 0 instead
+    // of resuming the paused one.
+    if (state.audioCtxSuspended) return;
     state.pocketIndex += 1;
     playNextPocketChunk();
   };
@@ -1444,10 +1487,12 @@ function playElevenLabsDecodedChunk(buffer) {
   source.playbackRate.value = Number(els.speed.value) || 1.0;
   source.connect(ctx.destination);
   pocketSource = source; // shared with pocket - we only ever have one playback pipeline live
+  source._startCtxTime = ctx.currentTime;
   source.onended = () => {
     if (pocketSource !== source) return;
     pocketSource = null;
     if (state.abortElevenLabs) return;
+    if (state.audioCtxSuspended) return;
     state.elevenLabsIndex += 1;
     playNextElevenLabsChunk();
   };
@@ -1456,6 +1501,197 @@ function playElevenLabsDecodedChunk(buffer) {
     `ElevenLabs: chunk ${state.elevenLabsIndex + 1}/${state.elevenLabsQueue.length} on page ${state.currentPage} \u2026`,
     "busy"
   );
+}
+
+// ----- position slider (seek within current page) -----
+//
+// Timeline model: each page is split into N chunks; the slider's
+// min..max maps to 0..N. The current chunk + a fractional offset
+// within the chunk drive the slider's value, advanced by a single
+// requestAnimationFrame ticker so the knob moves smoothly while audio
+// plays. Seeking by dragging the slider snaps to a chunk index and
+// jumps there via jumpToChunk().
+//
+// Browser TTS has no buffer per chunk, so the slider is disabled for
+// that engine (we'd need to estimate per-utterance timing to make it
+// work).
+
+let posTickerRaf = null;
+
+function currentChunkQueue() {
+  return els.engine.value === "elevenlabs" ? state.elevenLabsQueue : state.pocketQueue;
+}
+function currentChunkBuffers() {
+  return els.engine.value === "elevenlabs" ? state.elevenLabsBuffers : state.pocketBuffers;
+}
+function currentChunkIndex() {
+  return els.engine.value === "elevenlabs" ? state.elevenLabsIndex : state.pocketIndex;
+}
+
+function setAudioSliderDisabled(disabled) {
+  if (!els.audioPos) return;
+  els.audioPos.disabled = disabled;
+}
+
+function resetAudioPosUI() {
+  if (!els.audioPos) return;
+  els.audioPos.value = "0";
+  els.audioPos.max = "1";
+  if (els.audioPosLabel) {
+    els.audioPosLabel.textContent = "—";
+  }
+}
+
+function refreshAudioPosUI() {
+  if (!els.audioPos) return;
+  const queue = currentChunkQueue();
+  const idx = currentChunkIndex();
+  els.audioPos.max = String(Math.max(1, queue.length));
+  if (!state.isDraggingSlider) {
+    els.audioPos.value = String(Math.min(Number(els.audioPos.max), idx));
+  }
+  const totalPages = state.pdfDoc ? state.pdfDoc.numPages : 0;
+  if (els.audioPosLabel) {
+    if (queue.length === 0 || totalPages === 0) {
+      els.audioPosLabel.textContent = "—";
+    } else {
+      els.audioPosLabel.textContent =
+        `Chunk ${Math.min(idx + 1, queue.length)}/${queue.length} \u00b7 Page ${state.currentPage}/${totalPages}`;
+    }
+  }
+}
+
+function startPosTicker() {
+  cancelAnimationFrame(posTickerRaf);
+  const tick = () => {
+    const engine = els.engine.value;
+    if (engine !== "browser" && pocketSource && state.isPlaying && !state.isPaused) {
+      const ctx = getAudioCtx();
+      const buffer = pocketSource.buffer;
+      const queue = currentChunkQueue();
+      const idx = currentChunkIndex();
+      const speed = Number(els.speed.value) || 1.0;
+      const startCtxTime = pocketSource._startCtxTime ?? ctx.currentTime;
+      const elapsed = Math.max(0, (ctx.currentTime - startCtxTime) * speed);
+      const frac = buffer ? Math.min(1, elapsed / Math.max(0.001, buffer.duration)) : 0;
+      const max = Math.max(1, queue.length);
+      els.audioPos.max = String(max);
+      if (!state.isDraggingSlider) {
+        els.audioPos.value = String(Math.min(max, idx + frac));
+      }
+      const totalPages = state.pdfDoc ? state.pdfDoc.numPages : 0;
+      if (els.audioPosLabel) {
+        els.audioPosLabel.textContent =
+          `Chunk ${Math.min(idx + 1, queue.length)}/${queue.length} \u00b7 Page ${state.currentPage}/${totalPages}`;
+      }
+    } else if (engine !== "browser") {
+      // paused / stopped but a queue exists — keep the label fresh even if
+      // the value doesn't move
+      refreshAudioPosUI();
+    }
+    posTickerRaf = requestAnimationFrame(tick);
+  };
+  posTickerRaf = requestAnimationFrame(tick);
+}
+
+function stopPosTicker() {
+  cancelAnimationFrame(posTickerRaf);
+  posTickerRaf = null;
+}
+
+// Jump the active engine to chunk index `targetIdx` of the current page.
+// Cancels the active source, rewinds the queue index, and either replays
+// the cached buffer or kicks off a fresh fetch+decode.
+async function jumpToChunk(targetIdx) {
+  const engine = els.engine.value;
+  if (engine === "browser") return;
+  const queue = currentChunkQueue();
+  const buffers = currentChunkBuffers();
+  if (queue.length === 0) return;
+  const clamped = Math.max(0, Math.min(queue.length - 1, targetIdx));
+
+  // Stop whatever is playing right now. The onended handler will fire but
+  // is a no-op because pocketSource will no longer match (we nulled it).
+  if (pocketSource) {
+    try { pocketSource.stop(); } catch (_) {}
+    pocketSource = null;
+  }
+
+  // Bump the playback token so any in-flight fetch for the old chunk is
+  // discarded by its own myToken guard.
+  if (engine === "elevenlabs") {
+    state.elevenLabsPlayToken = (state.elevenLabsPlayToken || 0) + 1;
+    state.elevenLabsIndex = clamped;
+  } else {
+    state.pocketPlayToken = (state.pocketPlayToken || 0) + 1;
+    state.pocketIndex = clamped;
+  }
+
+  // We're continuing playback, not starting over.
+  state.isPlaying = true;
+  state.isPaused = false;
+  state.audioCtxSuspended = false;
+  els.play.disabled = true;
+  els.pause.disabled = false;
+  els.stop.disabled = false;
+  syncPlayButton();
+
+  try { await getAudioCtx().resume(); } catch (_) {}
+
+  const buffer = buffers[clamped];
+  if (buffer) {
+    if (engine === "elevenlabs") playElevenLabsDecodedChunk(buffer);
+    else playDecodedChunk(buffer);
+  } else {
+    setStatus(
+      `Loading chunk ${clamped + 1}/${queue.length} on page ${state.currentPage} \u2026`,
+      "busy"
+    );
+    if (engine === "elevenlabs") {
+      fetchAndDecodeElevenLabsChunk(clamped).then((b) => {
+        if (!b) return;
+        // Only play if we are still on this chunk (user didn't jump again).
+        if (state.elevenLabsIndex !== clamped) return;
+        playElevenLabsDecodedChunk(b);
+      }).catch(() => {});
+    } else {
+      fetchAndDecodeChunk(clamped).then((b) => {
+        if (!b) return;
+        if (state.pocketIndex !== clamped) return;
+        playDecodedChunk(b);
+      }).catch(() => {});
+    }
+  }
+}
+
+// ----- slider event wiring -----
+if (els.audioPos) {
+  // While the user is dragging, suppress the position ticker so it
+  // doesn't fight the user's pointer; release the suppression on mouseup
+  // (and also fire the seek then).
+  const onDragStart = () => { state.isDraggingSlider = true; };
+  const onDragEnd = () => {
+    state.isDraggingSlider = false;
+    if (!state.pdfDoc) return;
+    if (els.engine.value === "browser") return;
+    if (!state.isPlaying && !state.isPaused) return;
+    const target = Math.floor(Number(els.audioPos.value));
+    jumpToChunk(target);
+  };
+  els.audioPos.addEventListener("mousedown", onDragStart);
+  els.audioPos.addEventListener("touchstart", onDragStart, { passive: true });
+  els.audioPos.addEventListener("mouseup", onDragEnd);
+  els.audioPos.addEventListener("touchend", onDragEnd);
+  els.audioPos.addEventListener("blur", () => { state.isDraggingSlider = false; });
+  // Keyboard arrow keys on the slider: change fires per arrow press.
+  els.audioPos.addEventListener("change", () => {
+    state.isDraggingSlider = false;
+    if (!state.pdfDoc) return;
+    if (els.engine.value === "browser") return;
+    if (!state.isPlaying && !state.isPaused) return;
+    const target = Math.floor(Number(els.audioPos.value));
+    jumpToChunk(target);
+  });
 }
 
 // ----- initial UI state -----

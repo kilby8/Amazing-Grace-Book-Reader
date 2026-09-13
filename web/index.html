@@ -342,6 +342,23 @@
           </button>
         </section>
 
+        <section class="audio-progress" aria-label="Playback position">
+          <input
+            id="audioPos"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value="0"
+            disabled
+            aria-label="Seek within current page"
+          />
+          <div class="audio-progress-meta">
+            <span id="audioPosLabel" class="audio-progress-label">—</span>
+            <span class="audio-progress-hint" aria-hidden="true">drag to jump to a chunk</span>
+          </div>
+        </section>
+
         <section class="text" aria-label="Extracted text">
           <details>
             <summary>View extracted text</summary>
