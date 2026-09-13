@@ -1,0 +1,12 @@
+﻿[Unit]
+Description=Daily pocket-tts backup to restic
+
+[Timer]
+# 02:00 UTC daily. Pocket TTS isn't user-facing at this hour; B2 free
+# tier has no egress limits but a low-traffic window avoids contention.
+OnCalendar=*-*-* 02:00:00 UTC
+RandomizedDelaySec=600
+Persistent=true
+
+[Install]
+WantedBy=timers.target

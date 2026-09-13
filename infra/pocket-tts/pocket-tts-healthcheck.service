@@ -1,0 +1,13 @@
+﻿[Unit]
+Description=Pocket TTS health check (logs to syslog, non-zero on failure)
+After=pocket-tts.service
+
+[Service]
+Type=oneshot
+User=ubuntu
+# Loopback only - pocket-tts is not exposed outside the VM.
+ExecStart=/usr/bin/curl -fsS --max-time 10 http://127.0.0.1:8765/health
+SuccessExitStatus=0
+# On failure, leave a clear syslog line so it's easy to spot in the journal.
+StandardOutput=journal
+StandardError=journal

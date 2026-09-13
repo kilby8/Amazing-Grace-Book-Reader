@@ -239,5 +239,60 @@ fi
 say "Done. Health check:"
 curl -fsS http://127.0.0.1:8770/api/me || true
 echo
+
+# ----- Pocket TTS (self-hosted TTS engine on this VM) -----
+# Optional but recommended: lets the reader run TTS without burning the
+# ElevenLabs free-tier quota. Installed only when DEPLOY_POCKET=1 (default)
+# or when /opt/pocket-tts/serve_local.py is already present.
+POCKET_TTS_DIR=/opt/pocket-tts
+if [[ "${DEPLOY_POCKET:-1}" == "1" && -d "$APP_DIR/infra/pocket-tts" ]]; then
+  say "Setting up Pocket TTS"
+  sudo apt-get install -y -qq python3-venv python3-pip restic 2>&1 | tail -2
+
+  sudo mkdir -p "$POCKET_TTS_DIR"
+  sudo chown "$DEPLOY_USER:$DEPLOY_USER" "$POCKET_TTS_DIR"
+  if [[ ! -d "$POCKET_TTS_DIR/venv" ]]; then
+    sudo -u "$DEPLOY_USER" python3 -m venv "$POCKET_TTS_DIR/venv"
+  fi
+  # torch 2.10+ dropped the Linux aarch64 cp312 wheel; pip would otherwise
+  # try to build from source. Pin <2.10 so the manylinux2014_aarch64 wheel
+  # is picked.
+  sudo -u "$DEPLOY_USER" "$POCKET_TTS_DIR/venv/bin/pip" install --quiet \
+      'torch>=2.5.0,<2.10.0' pocket-tts fastapi 'uvicorn[standard]' python-multipart 2>&1 | tail -2
+  sudo cp "$APP_DIR/infra/pocket-tts/serve_local.py" "$POCKET_TTS_DIR/serve_local.py"
+  sudo chown "$DEPLOY_USER:$DEPLOY_USER" "$POCKET_TTS_DIR/serve_local.py"
+
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts.service" /etc/systemd/system/pocket-tts.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable pocket-tts
+  sudo systemctl restart pocket-tts
+
+  # Weekly health check (lands in syslog, non-zero exit if pocket-tts is down).
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-healthcheck.service" /etc/systemd/system/
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-healthcheck.timer"    /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now pocket-tts-healthcheck.timer
+
+  # Caddy route for /pocket/* is patched in Caddyfile; live Caddy needs
+  # 'sudo systemctl reload caddy' after the file changes. Documented in
+  # the Caddyfile block.
+
+  # Daily restic snapshot to Backblaze B2. The script exits cleanly with a
+  # syslog note when B2 creds aren't configured yet, so the timer is safe
+  # to enable even before creds arrive.
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-backup.service" /etc/systemd/system/
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-backup.timer"    /etc/systemd/system/
+  sudo cp "$APP_DIR/infra/pocket-tts/backup.sh" "$POCKET_TTS_DIR/backup.sh"
+  sudo chmod 755 "$POCKET_TTS_DIR/backup.sh"
+  sudo systemctl daemon-reload
+  sudo systemctl enable pocket-tts-backup.timer
+  if grep -qE '^B2_ACCOUNT_ID=' "$ENV_FILE" 2>/dev/null; then
+    say "B2 creds present - backup timer is armed"
+  else
+    say "B2 creds not yet in $ENV_FILE - backup will skip nightly with a syslog note"
+    say "  (set B2_ACCOUNT_ID, B2_ACCOUNT_KEY, RESTIC_PASSWORD in $ENV_FILE to enable)"
+  fi
+fi
+
 say "Service status:"
 sudo systemctl --no-pager status amazinggrace || true
