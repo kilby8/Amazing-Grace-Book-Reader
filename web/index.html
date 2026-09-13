@@ -206,9 +206,9 @@
             <label for="engine" class="field-label">Engine</label>
             <div class="select-wrap">
               <select id="engine" class="field-control" aria-label="TTS engine">
-                <option value="elevenlabs" selected>ElevenLabs &middot; cloud, works anywhere</option>
+                <option value="pocket" selected>Pocket TTS &middot; self-hosted, free, default</option>
+                <option value="elevenlabs">ElevenLabs &middot; cloud, paid plan required</option>
                 <option value="browser">Browser TTS &middot; zero setup, lower quality</option>
-                <option value="pocket">Pocket TTS &middot; local server only</option>
               </select>
             </div>
           </div>
@@ -361,9 +361,10 @@
     <p>
       Runs locally. Text extraction via
       <a href="https://mozilla.github.io/pdf.js/" target="_blank" rel="noopener">pdf.js</a>.
-      Pocket TTS is optional &mdash;
-      <a href="https://github.com/kyutai/pocket-tts" target="_blank" rel="noopener">kyutai/pocket-tts</a>.
-      ElevenLabs is the default engine &mdash;
+      Pocket TTS is the default engine &mdash;
+      <a href="https://github.com/kyutai/pocket-tts" target="_blank" rel="noopener">kyutai/pocket-tts</a>
+      (self-hosted on the server, free).
+      ElevenLabs is opt-in if you upgrade the plan &mdash;
       <a href="https://elevenlabs.io" target="_blank" rel="noopener">elevenlabs.io</a>.
     </p>
   </footer>
