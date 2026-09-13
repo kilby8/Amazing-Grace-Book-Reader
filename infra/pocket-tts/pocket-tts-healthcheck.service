@@ -1,4 +1,4 @@
-﻿[Unit]
+[Unit]
 Description=Pocket TTS health check (logs to syslog, non-zero on failure)
 After=pocket-tts.service
 

@@ -1,4 +1,4 @@
-﻿"""
+"""
 serve_local.py â€” Kyutai Pocket TTS as a small local HTTP server.
 
 Works around a v3.0.2 bug in `pocket-tts serve` where the module-global model

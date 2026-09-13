@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # Snapshot the pocket-tts install (venv + model cache) to a restic repo.
 # Skips cleanly with a syslog note when B2 creds aren't configured yet,
 # so the daily timer can be enabled before creds arrive without errors.

@@ -1,4 +1,4 @@
-﻿[Unit]
+[Unit]
 Description=Snapshot pocket-tts install to restic (B2)
 After=pocket-tts.service
 

@@ -1,4 +1,4 @@
-﻿[Unit]
+[Unit]
 Description=Daily pocket-tts backup to restic
 
 [Timer]

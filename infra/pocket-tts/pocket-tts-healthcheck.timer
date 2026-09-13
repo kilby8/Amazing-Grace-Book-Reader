@@ -1,4 +1,4 @@
-﻿[Unit]
+[Unit]
 Description=Weekly Pocket TTS health check
 
 [Timer]
