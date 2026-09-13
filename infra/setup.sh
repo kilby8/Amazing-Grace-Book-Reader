@@ -125,9 +125,12 @@ if [[ -n "${ELEVENLABS_API_KEY:-}" ]]; then
   "created_at": "$(date -Iseconds)"
 }
 EOF
-  sudo chmod 600 /etc/amazing-grace/elevenlabs_credentials.json
-  sudo chown root:www-data /etc/amazing-grace/elevenlabs_credentials.json 2>/dev/null \
-    || sudo chown root:root /etc/amazing-grace/elevenlabs_credentials.json
+  sudo chmod 640 /etc/amazing-grace/elevenlabs_credentials.json
+  # The systemd service runs as ${DEPLOY_USER}, so the deploy user needs
+  # to be able to READ the key. root owns the file, the deploy group reads.
+  # (Previously this chowned to root:www-data, which broke on Oracle Cloud
+  # Ubuntu images where the deploy user is `ubuntu` and not in www-data.)
+  sudo chown "root:${DEPLOY_USER}" /etc/amazing-grace/elevenlabs_credentials.json
 elif [[ ! -f /etc/amazing-grace/elevenlabs_credentials.json ]]; then
   say "WARNING: no ElevenLabs key found. Create /etc/amazing-grace/elevenlabs_credentials.json or set ELEVENLABS_API_KEY in ${ENV_FILE} for the TTS proxy to work."
 fi
