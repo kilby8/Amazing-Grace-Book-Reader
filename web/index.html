@@ -18,6 +18,30 @@
 <body>
   <a class="skip-link" href="#main">Skip to content</a>
 
+  <!-- SVG sprite: reusable <symbol> definitions, referenced via <use href="#id"/>. -->
+  <svg width="0" height="0" class="visually-hidden" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <symbol id="open-book" viewBox="0 0 120 80">
+        <!-- warm halo behind the book -->
+        <ellipse cx="60" cy="44" rx="58" ry="32" fill="currentColor" fill-opacity="0.18"/>
+        <!-- left page -->
+        <path d="M58 22 C 40 16, 22 18, 12 22 L 12 66 C 22 62, 40 60, 58 66 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <!-- right page -->
+        <path d="M62 22 C 80 16, 98 18, 108 22 L 108 66 C 98 62, 80 60, 62 66 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <!-- spine -->
+        <path d="M60 22 L 60 66" stroke="currentColor" stroke-width="1.6"/>
+        <!-- text lines (left) -->
+        <line x1="22" y1="30" x2="50" y2="28" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <line x1="22" y1="38" x2="50" y2="36" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <line x1="22" y1="46" x2="46" y2="44" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <!-- text lines (right) -->
+        <line x1="70" y1="28" x2="98" y2="30" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <line x1="70" y1="36" x2="98" y2="38" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <line x1="74" y1="44" x2="98" y2="46" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+      </symbol>
+    </defs>
+  </svg>
+
   <header class="topbar" role="banner">
     <div class="topbar-inner">
       <div class="brand">
@@ -39,8 +63,12 @@
     <!-- ============== LOGIN SCREEN ============== -->
     <section id="authScreen" class="screen" aria-label="Sign in" hidden>
       <div class="auth-card">
+        <div class="auth-hero" aria-hidden="true">
+          <svg class="book-illustration"><use href="#open-book"/></svg>
+        </div>
         <h2 class="auth-heading">Sign in</h2>
         <p class="auth-sub">Save your library and pick up where you left off.</p>
+        <p class="auth-accent">Listen. Breathe. Be still.</p>
 
         <div class="auth-tabs" role="tablist">
           <button id="tabLogin" type="button" class="auth-tab auth-tab-active" role="tab" aria-selected="true">Sign in</button>
@@ -125,6 +153,7 @@
         <!-- Book grid -->
         <ul id="bookGrid" class="book-grid" aria-live="polite"></ul>
         <div id="libraryEmpty" class="library-empty" hidden>
+          <svg class="book-illustration book-illustration-sm" aria-hidden="true"><use href="#open-book"/></svg>
           <p>Your library is empty.</p>
           <p class="muted">Drop a PDF or EPUB above to get started.</p>
         </div>
@@ -158,6 +187,7 @@
 
         <ul id="publicGrid" class="book-grid" aria-live="polite"></ul>
         <div id="publicEmpty" class="library-empty" hidden>
+          <svg class="book-illustration book-illustration-sm" aria-hidden="true"><use href="#open-book"/></svg>
           <p>Nothing has been shared yet.</p>
           <p class="muted">Make one of your books public to start the library.</p>
         </div>
