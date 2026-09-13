@@ -403,16 +403,30 @@ app.post("/api/tts", requireAuth, ttsLimiter, async (req, res, next) => {
     });
     if (!upstream.ok || !upstream.body) {
       const errBody = await upstream.text().catch(() => "");
+      // ElevenLabs returns a JSON body with detail.code; peek at it so we
+      // can distinguish "invalid_api_key" from "quota_exceeded" - they
+      // both come back as HTTP 401, but the meaning is very different.
+      let errCode = null;
+      try {
+        errCode = JSON.parse(errBody)?.detail?.code || null;
+      } catch (_) { /* non-JSON or empty */ }
       console.error(
-        `ElevenLabs error ${upstream.status}: ${errBody.slice(0, 200)}`
+        `ElevenLabs error ${upstream.status} (${errCode || "?"}): ${errBody.slice(0, 200)}`
       );
+      if (upstream.status === 401 && errCode === "quota_exceeded") {
+        return res.status(503).json({
+          error: "ElevenLabs: free-tier quota exhausted. Switch to a different TTS engine or upgrade your plan.",
+          code: "quota_exceeded",
+        });
+      }
       if (upstream.status === 401) {
         return res.status(502).json({ error: "ElevenLabs: invalid API key" });
       }
       if (upstream.status === 402) {
-        return res
-          .status(502)
-          .json({ error: "ElevenLabs: quota exhausted or model unavailable" });
+        return res.status(503).json({
+          error: "ElevenLabs: quota exhausted or model unavailable",
+          code: "quota_exceeded",
+        });
       }
       if (upstream.status === 429) {
         return res
