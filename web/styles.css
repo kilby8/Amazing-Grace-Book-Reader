@@ -675,6 +675,29 @@ a:hover { text-decoration: underline; }
 .foot a { color: var(--color-fg-muted); text-decoration: underline; text-underline-offset: 2px; }
 .foot a:hover { color: var(--color-accent); }
 
+/* A quiet scriptural note above the tech credits. The line is small, italic,
+   and a touch warmer than the surrounding muted text so it reads as a
+   grace-note rather than a footnote. Reference sits below in even softer type. */
+.foot-scripture {
+  margin: 0 0 var(--space-3);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  font-style: italic;
+  color: var(--color-fg-muted);
+}
+.foot-scripture-text {
+  font-size: var(--text-sm);
+  letter-spacing: 0.005em;
+}
+.foot-scripture-ref {
+  font-size: var(--text-xs);
+  font-style: normal;
+  color: var(--color-fg-subtle);
+  letter-spacing: 0.02em;
+}
+
 /* =========================================================================
    Responsive - verified at 320 / 375 / 414 / 768
    ========================================================================= */
