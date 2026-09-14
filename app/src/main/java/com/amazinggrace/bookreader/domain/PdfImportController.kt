@@ -19,11 +19,7 @@ class PdfImportController(
         viewModel.startOcr()
 
         runCatching {
-            context.contentResolver.openInputStream(uri).use { input ->
-                requireNotNull(input) { "could not open PDF at $uri" }
-                PdfTextExtractor.ensureInitialized(context)
-                PdfTextExtractor.extract(input)
-            }
+            PdfTextExtractor.extract(context, uri)
         }.onSuccess { text ->
             viewModel.applyOcrResult(
                 ReaderOcrResult(

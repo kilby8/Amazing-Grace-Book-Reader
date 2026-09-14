@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Amazing Grace Reader — an audiobook for the books on your desk</title>
+  <meta name="description" content="Drop a PDF or EPUB, hear it read aloud. Save your library under a login." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap"
+  />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="icon" href="data:," />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <!-- SVG sprite: reusable <symbol> definitions, referenced via <use href="#id"/>. -->
+  <svg width="0" height="0" class="visually-hidden" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <symbol id="open-book" viewBox="0 0 120 80">
+        <!-- warm halo behind the book -->
+        <ellipse cx="60" cy="44" rx="58" ry="32" fill="currentColor" fill-opacity="0.18"/>
+        <!-- left page -->
+        <path d="M58 22 C 40 16, 22 18, 12 22 L 12 66 C 22 62, 40 60, 58 66 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <!-- right page -->
+        <path d="M62 22 C 80 16, 98 18, 108 22 L 108 66 C 98 62, 80 60, 62 66 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <!-- spine -->
+        <path d="M60 22 L 60 66" stroke="currentColor" stroke-width="1.6"/>
+        <!-- text lines (left) -->
+        <line x1="22" y1="30" x2="50" y2="28" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <line x1="22" y1="38" x2="50" y2="36" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <line x1="22" y1="46" x2="46" y2="44" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <!-- text lines (right) -->
+        <line x1="70" y1="28" x2="98" y2="30" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <line x1="70" y1="36" x2="98" y2="38" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+        <line x1="74" y1="44" x2="98" y2="46" stroke="currentColor" stroke-opacity="0.35" stroke-width="1"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <header class="topbar" role="banner">
+    <div class="topbar-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">A</span>
+        <div class="brand-text">
+          <h1 class="brand-name">Amazing Grace Reader</h1>
+          <p class="brand-tagline">An audiobook for the books on your desk.</p>
+        </div>
+      </div>
+      <nav class="topbar-meta" aria-label="Session">
+        <span id="status" class="status-pill" data-state="idle">Checking session…</span>
+        <button id="logoutBtn" type="button" class="btn btn-ghost btn-small" hidden>Sign out</button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main" class="layout">
+
+    <!-- ============== LOGIN SCREEN ============== -->
+    <section id="authScreen" class="screen" aria-label="Sign in" hidden>
+      <div class="auth-card">
+        <div class="auth-hero" aria-hidden="true">
+          <svg class="book-illustration"><use href="#open-book"/></svg>
+        </div>
+        <h2 class="auth-heading">Sign in</h2>
+        <p class="auth-sub">Save your library and pick up where you left off.</p>
+        <p class="auth-accent">Listen. Breathe. Be still.</p>
+
+        <div class="auth-tabs" role="tablist">
+          <button id="tabLogin" type="button" class="auth-tab auth-tab-active" role="tab" aria-selected="true">Sign in</button>
+          <button id="tabRegister" type="button" class="auth-tab" role="tab" aria-selected="false">Create account</button>
+        </div>
+
+        <form id="authForm" class="auth-form" novalidate>
+          <div class="field">
+            <label for="authUsername" class="field-label">Username</label>
+            <input
+              id="authUsername"
+              type="text"
+              class="field-control"
+              autocomplete="username"
+              spellcheck="false"
+              required
+              minlength="3"
+              maxlength="32"
+            />
+          </div>
+          <div class="field">
+            <label for="authPassword" class="field-label">Password</label>
+            <input
+              id="authPassword"
+              type="password"
+              class="field-control"
+              autocomplete="current-password"
+              required
+              minlength="6"
+            />
+          </div>
+          <p id="authError" class="auth-error" role="alert" aria-live="polite" hidden></p>
+          <button id="authSubmit" type="submit" class="btn btn-play btn-full">
+            <span id="authSubmitLabel">Sign in</span>
+          </button>
+          <p class="auth-hint">Local-only accounts. Stored in a SQLite file under <code>data/library.db</code> on this machine.</p>
+        </form>
+      </div>
+    </section>
+
+    <!-- ============== LIBRARY SCREEN ============== -->
+    <section id="libraryScreen" class="screen" aria-label="Your library" hidden>
+      <div class="library-inner">
+
+        <!-- Library header: greeting + actions -->
+        <div class="library-head">
+          <div>
+            <p class="library-eyebrow">Library</p>
+            <h2 class="library-greeting" id="libraryGreeting">Welcome back.</h2>
+          </div>
+          <div class="library-actions">
+            <button id="uploadPickBtn" type="button" class="btn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 5v14"/><path d="M5 12h14"/></svg>
+              <span>Add book</span>
+            </button>
+            <input id="filePicker" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub" hidden />
+          </div>
+        </div>
+
+        <!-- Drop zone for adding a book -->
+        <section
+          id="drop"
+          class="drop drop-library"
+          tabindex="0"
+          role="button"
+          aria-label="Drop a PDF or EPUB here, or click to choose a file"
+        >
+          <div class="drop-inner">
+            <div class="drop-icon" aria-hidden="true">
+              <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+                <path d="M12 8v6" />
+                <path d="M9 11l3-3 3 3" />
+              </svg>
+            </div>
+            <p class="drop-headline">Drop a PDF or EPUB</p>
+            <p class="drop-sub">It joins your library and you can read it now.</p>
+          </div>
+        </section>
+
+        <!-- Book grid -->
+        <ul id="bookGrid" class="book-grid" aria-live="polite"></ul>
+        <div id="libraryEmpty" class="library-empty" hidden>
+          <svg class="book-illustration book-illustration-sm" aria-hidden="true"><use href="#open-book"/></svg>
+          <p>Your library is empty.</p>
+          <p class="muted">Drop a PDF or EPUB above to get started.</p>
+        </div>
+
+        <div class="library-foot">
+          <button id="browsePublicBtn" type="button" class="btn btn-ghost">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><path d="M2 12h20"/><path d="M12 2a15 15 0 0 1 0 20"/><path d="M12 2a15 15 0 0 0 0 20"/></svg>
+            <span>Browse public library</span>
+          </button>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============== PUBLIC LIBRARY SCREEN ============== -->
+    <section id="publicScreen" class="screen" aria-label="Public library" hidden>
+      <div class="library-inner">
+
+        <div class="library-head">
+          <div>
+            <p class="library-eyebrow">Public library</p>
+            <h2 class="library-greeting" id="publicGreeting">Books shared by everyone.</h2>
+          </div>
+          <div class="library-actions">
+            <button id="backFromPublic" type="button" class="btn btn-ghost">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+              <span>Back to library</span>
+            </button>
+          </div>
+        </div>
+
+        <ul id="publicGrid" class="book-grid" aria-live="polite"></ul>
+        <div id="publicEmpty" class="library-empty" hidden>
+          <svg class="book-illustration book-illustration-sm" aria-hidden="true"><use href="#open-book"/></svg>
+          <p>Nothing has been shared yet.</p>
+          <p class="muted">Make one of your books public to start the library.</p>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ============== READER SCREEN ============== -->
+    <section id="readerScreen" class="screen screen-grid" aria-label="Reader" hidden>
+      <!-- LEFT COLUMN: settings -->
+      <aside class="col col-settings" aria-label="Settings">
+        <section class="card card-settings">
+          <h2 class="card-heading">Voice</h2>
+
+          <div class="field">
+            <label for="engine" class="field-label">Engine</label>
+            <div class="select-wrap">
+              <select id="engine" class="field-control" aria-label="TTS engine">
+                <option value="pocket" selected>Pocket TTS &middot; self-hosted, free, default</option>
+                <option value="elevenlabs">ElevenLabs &middot; cloud, paid plan required</option>
+                <option value="browser">Browser TTS &middot; zero setup, lower quality</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field" id="pocketRow" hidden>
+            <label for="pocketUrl" class="field-label">Pocket TTS URL</label>
+            <div class="input-with-action">
+              <input
+                id="pocketUrl"
+                type="text"
+                class="field-control"
+                spellcheck="false"
+                autocomplete="off"
+                placeholder="https://gracereader.duckdns.org/pocket"
+                value="https://gracereader.duckdns.org/pocket"
+                aria-label="Pocket TTS base URL"
+              />
+              <button id="pocketHealth" type="button" class="btn btn-ghost">Check</button>
+            </div>
+          </div>
+
+          <div class="field" id="pocketVoiceRow" hidden>
+            <label for="pocketVoice" class="field-label">Pocket voice</label>
+            <input
+              id="pocketVoice"
+              type="text"
+              class="field-control"
+              spellcheck="false"
+              autocomplete="off"
+              placeholder="alba"
+              value="alba"
+              list="pocketVoiceList"
+              aria-label="Pocket TTS voice id"
+            />
+            <datalist id="pocketVoiceList">
+              <option value="eve"></option>
+              <option value="alba"></option>
+              <option value="lola"></option>
+            </datalist>
+          </div>
+
+          <div class="field" id="elevenLabsRow">
+            <label for="elevenLabsVoice" class="field-label">ElevenLabs voice id</label>
+            <div class="input-with-action">
+              <input
+                id="elevenLabsVoice"
+                type="text"
+                class="field-control"
+                placeholder="EXAVITQu4vr4xnSDxMaL"
+                value="EXAVITQu4vr4xnSDxMaL"
+                aria-label="ElevenLabs voice id"
+              />
+              <button id="elevenLabsStatus" type="button" class="btn btn-ghost">Check</button>
+            </div>
+            <p class="field-hint">Default is Sarah (free tier). The API key lives on the server, not the browser.</p>
+          </div>
+
+          <div class="field" id="browserVoiceRow">
+            <label for="browserVoice" class="field-label">Browser voice</label>
+            <div class="input-with-action">
+              <div class="select-wrap select-wrap-grow">
+                <select id="browserVoice" class="field-control" aria-label="Browser TTS voice"></select>
+              </div>
+              <button id="refreshVoices" type="button" class="btn btn-ghost btn-icon" title="Re-read voice list" aria-label="Refresh voice list">&orarr;</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card-settings">
+          <h2 class="card-heading">Speed</h2>
+          <div class="field field-slider">
+            <input
+              id="speed"
+              type="range"
+              min="0.5" max="2.0" step="0.05" value="1.0"
+              aria-label="Playback speed"
+            />
+            <div class="speed-readout" aria-hidden="true">
+              <span id="speedLabel" class="speed-value">1.00&times;</span>
+            </div>
+          </div>
+        </section>
+
+        <button id="backToLibrary" type="button" class="btn btn-ghost btn-back">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 12H5"/><path d="M12 19l-7-7 7-7"/></svg>
+          <span>Back to library</span>
+        </button>
+      </aside>
+
+      <!-- RIGHT COLUMN: now-reading + transport + extracted text -->
+      <section class="col col-main" aria-label="Reader content">
+
+        <section id="now-reading" class="now-reading" aria-label="Now reading" hidden>
+          <p class="nr-eyebrow">Now reading</p>
+          <h2 id="nrTitle" class="nr-title">Untitled</h2>
+          <div class="nr-meta">
+            <span class="nr-chapter">
+              <span class="nr-chapter-label">Chapter</span>
+              <input
+                id="pageJump"
+                class="nr-chapter-input"
+                type="number"
+                min="1"
+                value="1"
+                disabled
+                aria-label="Jump to chapter"
+              />
+              <span class="nr-chapter-sep">of</span>
+              <span id="pageCount" class="nr-chapter-total">0</span>
+            </span>
+            <span id="pagePrint" class="nr-print" hidden></span>
+          </div>
+        </section>
+
+        <section class="transport" aria-label="Playback controls">
+          <button id="prev" type="button" class="btn btn-transport" disabled aria-label="Previous chapter">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6V6zm3.5 6 8.5 6V6l-8.5 6z"/></svg>
+          </button>
+          <button id="play" type="button" class="btn btn-play" disabled aria-label="Play">
+            <svg id="playIcon" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M8 5v14l11-7L8 5z"/></svg>
+            <span id="playLabel">Play</span>
+          </button>
+          <button id="pause" type="button" class="btn btn-transport" disabled aria-label="Pause">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 5h4v14H6V5zm8 0h4v14h-4V5z"/></svg>
+          </button>
+          <button id="stop" type="button" class="btn btn-transport" disabled aria-label="Stop">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h12v12H6V6z"/></svg>
+          </button>
+          <button id="next" type="button" class="btn btn-transport" disabled aria-label="Next chapter">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 6h2v12h-2V6zM6 6v12l8.5-6L6 6z"/></svg>
+          </button>
+        </section>
+
+        <section class="audio-progress" aria-label="Playback position">
+          <input
+            id="audioPos"
+            type="range"
+            min="0"
+            max="1"
+            step="0.01"
+            value="0"
+            disabled
+            aria-label="Seek within current page"
+          />
+          <div class="audio-progress-meta">
+            <span id="audioPosLabel" class="audio-progress-label">—</span>
+            <span class="audio-progress-hint" aria-hidden="true">drag to jump to a chunk</span>
+          </div>
+        </section>
+
+        <section class="text" aria-label="Extracted text">
+          <details>
+            <summary>View extracted text</summary>
+            <pre id="textOut" aria-live="off"></pre>
+          </details>
+        </section>
+      </section>
+    </section>
+
+  </main>
+
+  <footer class="foot" role="contentinfo">
+    <p class="foot-scripture">
+      <span class="foot-scripture-text">&ldquo;He himself gives everyone life and breath, and everything else.&rdquo;</span>
+      <span class="foot-scripture-ref">&mdash; Acts 17:24&ndash;25</span>
+    </p>
+    <p>
+      Runs locally. Text extraction via
+      <a href="https://mozilla.github.io/pdf.js/" target="_blank" rel="noopener">pdf.js</a>.
+      Pocket TTS is the default engine &mdash;
+      <a href="https://github.com/kyutai/pocket-tts" target="_blank" rel="noopener">kyutai/pocket-tts</a>
+      (self-hosted on the server, free).
+      ElevenLabs is opt-in if you upgrade the plan &mdash;
+      <a href="https://elevenlabs.io" target="_blank" rel="noopener">elevenlabs.io</a>.
+    </p>
+  </footer>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

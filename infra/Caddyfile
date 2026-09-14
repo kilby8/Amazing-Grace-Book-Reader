@@ -1,0 +1,29 @@
+# Amazing Grace Reader - Caddy reverse proxy.
+# Replace YOUR.DOMAIN below before running setup.sh, or set CADDY_DOMAIN.
+YOUR.DOMAIN {
+  encode zstd gzip
+
+  # Pocket TTS - self-hosted TTS engine that lives at 127.0.0.1:8765 on the
+  # same VM. Stays bound to loopback (not exposed via Oracle SL); Caddy is the
+  # only thing the public internet touches. The /pocket/* prefix is stripped
+  # so the upstream sees /health and /tts directly.
+  handle /pocket/* {
+    uri strip_prefix /pocket
+    reverse_proxy 127.0.0.1:8765
+  }
+
+  # Long flush interval for streaming /api/tts responses from ElevenLabs.
+  # Everything else uses the default reverse proxy.
+  reverse_proxy 127.0.0.1:8770 {
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto https
+    flush_interval -1
+  }
+
+  log {
+    output file /var/log/caddy/access.log {
+      roll_size 100MiB
+      roll_keep 10
+    }
+  }
+}

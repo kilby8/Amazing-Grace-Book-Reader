@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Thin facade over a [SpeechEngine]. v1 ships two engines:
  * - [AndroidTtsEngine] (default — wraps android.speech.tts.TextToSpeech)
- * - [PocketTtsEngine] (HTTP + ExoPlayer, opt-in via [setEngine])
+ * - [PocketTtsEngine] (HTTP + android.media.MediaPlayer, opt-in via [setEngine])
  *
  * Existing callers (ReaderPlaybackService, ReaderPlaybackController) keep talking to the
  * public surface — speak / pause / stop / resetForNewText / updateSpeechRate / updatePitch /

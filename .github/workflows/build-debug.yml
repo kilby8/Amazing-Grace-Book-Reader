@@ -1,4 +1,4 @@
-name: build-debug-apk
+name: build-and-publish-apk
 
 # Trigger:
 #   - on every push to feat/pdf-pocket-tts (so we always have a fresh APK)
@@ -42,12 +42,37 @@ jobs:
         env:
           GRADLE_OPTS: '-Xmx8g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1g'
         run: ./gradlew assembleDebug --no-daemon
+        continue-on-error: true
+        # assembleDebug OOMs in d8's 2g worker fork on the full (unminified)
+        # classpath. The release build below (R8 + minify) is the one we ship;
+        # the debug APK is best-effort and is treated as an optional artifact.
 
-      - name: Upload APK as workflow artifact
+      - name: Build release APK (R8 minified)
+        env:
+          GRADLE_OPTS: '-Xmx8g -Dfile.encoding=UTF-8 -XX:MaxMetaspaceSize=1g'
+        run: ./gradlew assembleRelease --no-daemon
+        # R8 strips ~70% of unused classes/resources before dexing, so the
+        # resulting dex is small enough for d8's worker fork. This is the
+        # APK we publish on tagged releases. The signing config is the
+        # default debug keystore (this workflow does not ship a production
+        # keystore); the resulting APK is properly aligned and installs
+        # cleanly via sideload, but Play Store would reject it.
+
+      - name: Upload debug APK as workflow artifact
+        if: hashFiles('app/build/outputs/apk/debug/app-debug.apk') != ''
         uses: actions/upload-artifact@v4
         with:
           name: app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: ignore
+          retention-days: 30
+
+      - name: Upload release APK as workflow artifact
+        if: hashFiles('app/build/outputs/apk/release/app-release.apk') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-release
+          path: app/build/outputs/apk/release/app-release.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -55,7 +80,12 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: app/build/outputs/apk/debug/app-debug.apk
+          # Glob every APK the build produced. softprops/action-gh-release@v2
+          # silently skips missing paths, so this works whether debug succeeded
+          # or not — the release APK is the only one we actually promise.
+          files: |
+            app/build/outputs/apk/release/app-release.apk
+            app/build/outputs/apk/debug/app-debug.apk
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

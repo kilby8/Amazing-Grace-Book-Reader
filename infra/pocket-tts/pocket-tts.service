@@ -1,0 +1,30 @@
+[Unit]
+Description=Pocket TTS local HTTP server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/opt/pocket-tts
+ExecStart=/opt/pocket-tts/venv/bin/python serve_local.py --host 127.0.0.1 --port 8765 --voice alba
+Restart=on-failure
+RestartSec=3
+StandardOutput=journal
+StandardError=journal
+# The model is downloaded from HuggingFace on first start (~500 MB). Allow
+# plenty of time before systemd gives up on startup.
+TimeoutStartSec=600
+
+# Hardening (light-touch; this is a single-tenant reader)
+NoNewPrivileges=true
+ProtectSystem=full
+# Pocket TTS caches voice embeddings and uses advisory file locks under
+# ~/.cache/huggingface. Allow that one path; everything else under /home
+# stays read-only.
+ProtectHome=read-only
+ReadWritePaths=/home/ubuntu/.cache/huggingface
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

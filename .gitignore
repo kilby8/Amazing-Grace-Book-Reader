@@ -20,3 +20,32 @@ app/build/
 
 # Team / agent metadata (not source)
 TEAM-CHARTER.md
+
+# Diagnostic scratch tests (transient; keep canonical tests like test-epub.mjs, test-pageprint.mjs, test-library.mjs)
+web/test-diag*.mjs
+web/test-browser.mjs
+web/test-chunker.mjs
+web/shot-elevenlabs.mjs
+web/test-compare.mjs
+web/test-debug.mjs
+web/test-decode.mjs
+web/test-delete.mjs
+web/test-lookup.mjs
+web/test-mobile.mjs
+web/test-prefetch.mjs
+web/test-repro.mjs
+web/test-shot.mjs
+web/test-skip.mjs
+web/test-webaudio.mjs
+
+# Local library data (SQLite DB + uploaded book blobs)
+data/
+
+# Node modules for web/server
+web/node_modules/
+
+# Local scratch artifacts
+web/_test.html
+web/screenshot-*.png
+web/shot-*.png
+web/multipage-long.pdf

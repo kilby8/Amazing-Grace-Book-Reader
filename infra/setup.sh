@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# Provision a fresh Ubuntu 24.04 VPS for Amazing Grace Reader.
+# Run as the deploy user (not root) from a directory you can write to.
+# Idempotent: safe to re-run.
+set -euo pipefail
+
+# Default to the SSH user you ran setup.sh as. Oracle Cloud Ubuntu images use
+# `ubuntu`, AWS AMIs use `ec2-user`/`ubuntu`, GCP uses the chosen username, etc.
+# Override with DEPLOY_USER=... if you want to rename.
+DEPLOY_USER="${DEPLOY_USER:-${SUDO_USER:-$USER}}"
+APP_DIR="/opt/amazing-grace"
+REPO_URL="${REPO_URL:-https://github.com/kilby8/Amazing-Grace-Book-Reader.git}"
+REPO_BRANCH="${REPO_BRANCH:-feat/pdf-pocket-tts}"
+NODE_MAJOR="${NODE_MAJOR:-22}"
+
+say() { printf "\033[1;34m==>\033[0m %s\n" "$*"; }
+die() { printf "\033[1;31mFATAL:\033[0m %s\n" "$*" >&2; exit 1; }
+[[ $EUID -eq 0 ]] && die "Run as the deploy user, not root (sudo where needed)."
+
+# 1. System packages + firewall
+say "Installing system packages"
+sudo apt-get update -qq
+sudo apt-get install -y -qq \
+  curl git ufw fail2ban unzip ca-certificates rsync \
+  build-essential python3
+
+# 2. Firewall: only 22, 80, 443. Caddy handles 80/443.
+say "Configuring UFW"
+sudo ufw --force reset
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp comment "ssh"
+sudo ufw allow 80/tcp comment "http -> caddy"
+sudo ufw allow 443/tcp comment "https -> caddy"
+sudo ufw --force enable
+
+# 2a. Strip the cloud-image REJECT rules from /etc/iptables/rules.v4.
+# Some cloud images (notably Oracle Cloud Ubuntu 24.04) ship a hardcoded
+# REJECT-all rule ABOVE the ufw-before-input chain in /etc/iptables/rules.v4.
+# That REJECT matches and drops every non-22 packet before UFW's per-port
+# rules (80/443) are ever evaluated, so traffic that UFW allows still never
+# reaches Caddy. Drop those two REJECT rules from the cloud-image file so
+# UFW's ufw-reject-input (at the tail of ufw-before-input) becomes the real
+# default-deny. Apply to the live chain now and persist for next boot.
+if sudo grep -qE '^-A INPUT -j REJECT --reject-with icmp-host-prohibited$' /etc/iptables/rules.v4 2>/dev/null \
+   || sudo grep -qE '^-A FORWARD -j REJECT --reject-with icmp-host-prohibited$' /etc/iptables/rules.v4 2>/dev/null; then
+  say "Removing cloud-image REJECT rules that shadow UFW"
+  sudo iptables -D INPUT  -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || true
+  sudo iptables -D FORWARD -j REJECT --reject-with icmp-host-prohibited 2>/dev/null || true
+  sudo sed -i '/^-A INPUT -j REJECT --reject-with icmp-host-prohibited$/d'  /etc/iptables/rules.v4
+  sudo sed -i '/^-A FORWARD -j REJECT --reject-with icmp-host-prohibited$/d' /etc/iptables/rules.v4
+fi
+
+# 3. Caddy via the official repo
+if ! command -v caddy >/dev/null; then
+  say "Installing Caddy"
+  sudo apt-get install -y -qq debian-keyring debian-archive-keyring
+  curl -1sLf https://dl.cloudsmith.io/public/caddy/stable/gpg.key \
+    | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+  echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" \
+    | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+  sudo apt-get update -qq
+  sudo apt-get install -y -qq caddy
+fi
+
+# 4. Node.js via NodeSource
+if ! command -v node >/dev/null || [[ "$(node -p "process.versions.node.split('.')[0]")" != "$NODE_MAJOR" ]]; then
+  say "Installing Node.js ${NODE_MAJOR}"
+  curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | sudo -E bash -
+  sudo apt-get install -y -qq nodejs
+fi
+
+# 5. Application directory
+say "Setting up ${APP_DIR}"
+sudo mkdir -p "$APP_DIR"
+sudo chown "$DEPLOY_USER:$DEPLOY_USER" "$APP_DIR"
+
+# 6. Clone / update repo
+if [[ -d "$APP_DIR/.git" ]]; then
+  say "Updating existing checkout"
+  cd "$APP_DIR"
+  git fetch --quiet
+  git reset --hard "origin/${REPO_BRANCH}"
+else
+  say "Cloning ${REPO_BRANCH}"
+  git clone --branch "$REPO_BRANCH" --depth 1 "$REPO_URL" "$APP_DIR"
+  cd "$APP_DIR"
+fi
+
+# 7. Install dependencies
+say "Installing npm dependencies"
+cd "$APP_DIR/web"
+npm ci --omit=dev --no-audit --no-fund
+
+# 8. Data directory
+say "Creating data directory"
+mkdir -p "$APP_DIR/data/books"
+chmod 700 "$APP_DIR/data"
+
+# 9. Generate SESSION_SECRET if not already present
+ENV_FILE="$APP_DIR/.env"
+if [[ ! -f "$ENV_FILE" ]]; then
+  say "Generating .env with SESSION_SECRET"
+  SESSION_SECRET=$(node -e "console.log(require('node:crypto').randomBytes(48).toString('base64'))")
+  cat > "$ENV_FILE" <<EOF
+NODE_ENV=production
+PORT=8770
+HOST=127.0.0.1
+SESSION_SECRET=${SESSION_SECRET}
+DATA_DIR=${APP_DIR}/data
+ELEVENLABS_KEY_FILE=/etc/amazing-grace/elevenlabs_credentials.json
+EOF
+  chmod 600 "$ENV_FILE"
+  say "Edit ${ENV_FILE} if you need to override anything."
+fi
+
+# 10. ElevenLabs credentials (system location, locked down)
+if [[ -n "${ELEVENLABS_API_KEY:-}" ]]; then
+  say "Writing ElevenLabs credentials from ELEVENLABS_API_KEY env var"
+  sudo mkdir -p /etc/amazing-grace
+  sudo tee /etc/amazing-grace/elevenlabs_credentials.json >/dev/null <<EOF
+{
+  "_comment": "ElevenLabs API key for the Amazing Grace Reader web app.",
+  "api_key": "${ELEVENLABS_API_KEY}",
+  "created_at": "$(date -Iseconds)"
+}
+EOF
+  sudo chmod 640 /etc/amazing-grace/elevenlabs_credentials.json
+  # The systemd service runs as ${DEPLOY_USER}, so the deploy user needs
+  # to be able to READ the key. root owns the file, the deploy group reads.
+  # (Previously this chowned to root:www-data, which broke on Oracle Cloud
+  # Ubuntu images where the deploy user is `ubuntu` and not in www-data.)
+  sudo chown "root:${DEPLOY_USER}" /etc/amazing-grace/elevenlabs_credentials.json
+elif [[ ! -f /etc/amazing-grace/elevenlabs_credentials.json ]]; then
+  say "WARNING: no ElevenLabs key found. Create /etc/amazing-grace/elevenlabs_credentials.json or set ELEVENLABS_API_KEY in ${ENV_FILE} for the TTS proxy to work."
+fi
+
+# 11. systemd service
+say "Installing systemd service"
+sudo tee /etc/systemd/system/amazinggrace.service >/dev/null <<EOF
+[Unit]
+Description=Amazing Grace Reader web app
+After=network.target
+
+[Service]
+Type=simple
+User=${DEPLOY_USER}
+WorkingDirectory=${APP_DIR}/web
+EnvironmentFile=${APP_DIR}/.env
+ExecStart=/usr/bin/node server.js
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=${APP_DIR}/data /etc/amazing-grace
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload
+sudo systemctl enable amazinggrace
+sudo systemctl restart amazinggrace
+
+# 12. Caddy
+say "Configuring Caddy"
+sudo tee /etc/caddy/Caddyfile >/dev/null <<'CADDYEOF'
+# Replace YOUR.DOMAIN below before running, or set CADDY_DOMAIN.
+YOUR.DOMAIN {
+  encode zstd gzip
+
+  # flush_interval -1 keeps the response unbuffered so streaming audio
+  # from /api/tts lands in the browser as ElevenLabs emits it.
+  reverse_proxy 127.0.0.1:8770 {
+    header_up X-Forwarded-For {remote_host}
+    header_up X-Forwarded-Proto https
+    flush_interval -1
+  }
+
+  log {
+    output file /var/log/caddy/access.log {
+      roll_size 100MiB
+      roll_keep 10
+    }
+  }
+}
+CADDYEOF
+
+# Resolve the domain. Priority:
+#   1. CADDY_DOMAIN env var (explicit, e.g. reader.your-domain.com)
+#   2. DUCKDNS_DOMAIN env var (free DuckDNS subdomain)
+#   3. Leave YOUR.DOMAIN in place and warn.
+RESOLVED_DOMAIN=""
+if [[ -n "${CADDY_DOMAIN:-}" && "${CADDY_DOMAIN}" != "YOUR.DOMAIN" ]]; then
+  RESOLVED_DOMAIN="$CADDY_DOMAIN"
+elif [[ -n "${DUCKDNS_DOMAIN:-}" ]]; then
+  RESOLVED_DOMAIN="${DUCKDNS_DOMAIN}.duckdns.org"
+fi
+
+if [[ -n "$RESOLVED_DOMAIN" ]]; then
+  sudo sed -i "s/YOUR.DOMAIN/${RESOLVED_DOMAIN}/g" /etc/caddy/Caddyfile
+  sudo systemctl reload caddy
+  say "Caddy serving https://${RESOLVED_DOMAIN}"
+else
+  say "WARNING: set CADDY_DOMAIN or DUCKDNS_DOMAIN, then run: sudo systemctl reload caddy"
+fi
+
+# 13. DuckDNS cron (only if DUCKDNS_DOMAIN is set)
+if [[ -n "${DUCKDNS_DOMAIN:-}" ]]; then
+  say "Configuring DuckDNS auto-update"
+  sudo mkdir -p /etc/amazing-grace
+  sudo tee /etc/amazing-grace/duckdns.env >/dev/null <<EOF
+DUCKDNS_DOMAIN=${DUCKDNS_DOMAIN}
+DUCKDNS_TOKEN=${DUCKDNS_TOKEN:-}
+DUCKDNS_INTERFACE=${DUCKDNS_INTERFACE:-eth0}
+EOF
+  sudo chmod 600 /etc/amazing-grace/duckdns.env
+  sudo cp "$APP_DIR/infra/duckdns-update.cron" /etc/cron.d/duckdns-update
+  sudo chmod 644 /etc/cron.d/duckdns-update
+  sudo systemctl restart cron
+  if [[ -n "${DUCKDNS_TOKEN:-}" ]]; then
+    # Run it once now so the A record is current before Caddy asks for the cert.
+    sudo bash "$APP_DIR/infra/duckdns-update.sh" || say "WARNING: DuckDNS update failed; check /var/log/duckdns-update.log"
+  else
+    say "WARNING: DUCKDNS_TOKEN not set; the cron will fail until you put a token in /etc/amazing-grace/duckdns.env"
+  fi
+fi
+
+say "Done. Health check:"
+curl -fsS http://127.0.0.1:8770/api/me || true
+echo
+
+# ----- Pocket TTS (self-hosted TTS engine on this VM) -----
+# Optional but recommended: lets the reader run TTS without burning the
+# ElevenLabs free-tier quota. Installed only when DEPLOY_POCKET=1 (default)
+# or when /opt/pocket-tts/serve_local.py is already present.
+POCKET_TTS_DIR=/opt/pocket-tts
+if [[ "${DEPLOY_POCKET:-1}" == "1" && -d "$APP_DIR/infra/pocket-tts" ]]; then
+  say "Setting up Pocket TTS"
+  sudo apt-get install -y -qq python3-venv python3-pip restic 2>&1 | tail -2
+
+  sudo mkdir -p "$POCKET_TTS_DIR"
+  sudo chown "$DEPLOY_USER:$DEPLOY_USER" "$POCKET_TTS_DIR"
+  if [[ ! -d "$POCKET_TTS_DIR/venv" ]]; then
+    sudo -u "$DEPLOY_USER" python3 -m venv "$POCKET_TTS_DIR/venv"
+  fi
+  # torch 2.10+ dropped the Linux aarch64 cp312 wheel; pip would otherwise
+  # try to build from source. Pin <2.10 so the manylinux2014_aarch64 wheel
+  # is picked.
+  sudo -u "$DEPLOY_USER" "$POCKET_TTS_DIR/venv/bin/pip" install --quiet \
+      'torch>=2.5.0,<2.10.0' pocket-tts fastapi 'uvicorn[standard]' python-multipart 2>&1 | tail -2
+  sudo cp "$APP_DIR/infra/pocket-tts/serve_local.py" "$POCKET_TTS_DIR/serve_local.py"
+  sudo chown "$DEPLOY_USER:$DEPLOY_USER" "$POCKET_TTS_DIR/serve_local.py"
+
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts.service" /etc/systemd/system/pocket-tts.service
+  sudo systemctl daemon-reload
+  sudo systemctl enable pocket-tts
+  sudo systemctl restart pocket-tts
+
+  # Weekly health check (lands in syslog, non-zero exit if pocket-tts is down).
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-healthcheck.service" /etc/systemd/system/
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-healthcheck.timer"    /etc/systemd/system/
+  sudo systemctl daemon-reload
+  sudo systemctl enable --now pocket-tts-healthcheck.timer
+
+  # Caddy route for /pocket/* is patched in Caddyfile; live Caddy needs
+  # 'sudo systemctl reload caddy' after the file changes. Documented in
+  # the Caddyfile block.
+
+  # Daily restic snapshot to Backblaze B2. The script exits cleanly with a
+  # syslog note when B2 creds aren't configured yet, so the timer is safe
+  # to enable even before creds arrive.
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-backup.service" /etc/systemd/system/
+  sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-backup.timer"    /etc/systemd/system/
+  sudo cp "$APP_DIR/infra/pocket-tts/backup.sh" "$POCKET_TTS_DIR/backup.sh"
+  sudo chmod 755 "$POCKET_TTS_DIR/backup.sh"
+  sudo systemctl daemon-reload
+  sudo systemctl enable pocket-tts-backup.timer
+  if grep -qE '^B2_ACCOUNT_ID=' "$ENV_FILE" 2>/dev/null; then
+    say "B2 creds present - backup timer is armed"
+  else
+    say "B2 creds not yet in $ENV_FILE - backup will skip nightly with a syslog note"
+    say "  (set B2_ACCOUNT_ID, B2_ACCOUNT_KEY, RESTIC_PASSWORD in $ENV_FILE to enable)"
+  fi
+fi
+
+say "Service status:"
+sudo systemctl --no-pager status amazinggrace || true

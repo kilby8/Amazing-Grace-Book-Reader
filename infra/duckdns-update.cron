@@ -1,0 +1,7 @@
+# Every 5 minutes, refresh the DuckDNS A record to this VM's current
+# public IPv4 (handles Oracle stop/start, DHCP renewals, etc).
+# Install: sudo cp infra/duckdns-update.cron /etc/cron.d/duckdns-update
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+*/5 * * * * root /opt/amazing-grace/infra/duckdns-update.sh >> /var/log/duckdns-update.log 2>&1
