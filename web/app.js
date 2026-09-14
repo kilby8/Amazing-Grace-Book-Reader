@@ -1610,8 +1610,18 @@ async function jumpToChunk(targetIdx) {
   if (queue.length === 0) return;
   const clamped = Math.max(0, Math.min(queue.length - 1, targetIdx));
 
-  // Stop whatever is playing right now. The onended handler will fire but
-  // is a no-op because pocketSource will no longer match (we nulled it).
+  // CRITICAL: set abortPocket/abortElevenLabs BEFORE stopping the source.
+  // source.stop() fires onended synchronously, and the existing onended
+  // handler would otherwise advance the chunk index and create a new
+  // source for the FOLLOWING chunk — then jumpToChunk would create yet
+  // another source for the target chunk, and both would play at once
+  // (audible as overlapping / "crazy" audio). With the abort flag set,
+  // the spurious onended bails out and only the target chunk plays.
+  if (engine === "elevenlabs") state.abortElevenLabs = true;
+  else state.abortPocket = true;
+
+  // Stop whatever is playing right now. The onended handler will fire
+  // synchronously and bail on the abort flag above.
   if (pocketSource) {
     try { pocketSource.stop(); } catch (_) {}
     pocketSource = null;
@@ -1662,6 +1672,12 @@ async function jumpToChunk(targetIdx) {
       }).catch(() => {});
     }
   }
+
+  // Clear the abort flag now that the new source has taken over — the
+  // NEXT onended (when the new chunk finishes naturally) should advance
+  // to the chunk after `clamped` as normal.
+  if (engine === "elevenlabs") state.abortElevenLabs = false;
+  else state.abortPocket = false;
 }
 
 // ----- slider event wiring -----
