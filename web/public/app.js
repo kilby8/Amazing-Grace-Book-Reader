@@ -355,7 +355,7 @@ function renderLibrary() {
       const id = Number(btn.dataset.id);
       const book = state.books.find((b) => b.id === id);
       if (!book) return;
-      const ok = confirm(`Remove "${book.title}" from your library? The file will be deleted from disk.`);
+      const ok = confirm(`Remove "${book.title}" from your library? The file will be deleted.`);
       if (!ok) return;
       try {
         await api(`/api/books/${id}`, { method: "DELETE" });
@@ -1452,7 +1452,7 @@ async function fetchAndDecodeChunk(index) {
     return buffer;
   } catch (e) {
     if (!state.abortPocket && state.pocketPlayToken === myToken) {
-      setStatus(`Pocket TTS request failed: ${e.message}`, "err");
+      setStatus(`Pocket TTS request failed: ${e.message}. Try the Browser engine instead.`, "err");
       state.isPlaying = false;
       els.play.disabled = !state.pdfDoc;
       els.pause.disabled = true;

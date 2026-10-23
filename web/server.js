@@ -43,6 +43,7 @@ const HOST = process.env.HOST || "127.0.0.1";
 const NODE_ENV = process.env.NODE_ENV || "development";
 const IS_PROD = NODE_ENV === "production";
 const SESSION_SECRET = process.env.SESSION_SECRET;
+const POCKET_ORIGIN = process.env.POCKET_ORIGIN || "https://gracereader.duckdns.org";
 if (IS_PROD && !SESSION_SECRET) {
   console.error("FATAL: SESSION_SECRET is required in production. Refusing to start.");
   process.exit(1);
@@ -96,8 +97,9 @@ if (IS_PROD) app.set("trust proxy", 1);
 // Security headers (CSP allows the CDN scripts + Google Fonts + style
 // inline attributes the reader UI relies on). Loopback hosts are
 // permitted in connect-src so the pocket-tts engine (which lives at
-// 127.0.0.1:8765 on the reader's own box) can be reached; the Supabase
-// origin is permitted when books live in Supabase Storage.
+// 127.0.0.1:8765 on the reader's own box) can be reached, as is the hosted
+// Pocket server the UI points at by default (POCKET_ORIGIN overrides it);
+// the Supabase origin is permitted when books live in Supabase Storage.
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -119,6 +121,7 @@ app.use(
           "'self'",
           "http://127.0.0.1:*",
           "http://localhost:*",
+          POCKET_ORIGIN,
           ...(storage.MODE === "supabase" ? [storage.SUPABASE_URL] : []),
         ],
         mediaSrc: ["'self'", "blob:"],
