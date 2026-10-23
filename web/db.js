@@ -13,6 +13,11 @@
 //   books:  id, user_id (fk), title, author, kind ('pdf'|'epub'),
 //           filename (on disk, sanitized), size, added_at, last_opened_at,
 //           visibility ('private'|'public'), shared_at (ms; null while private)
+//   reading_progress: (user_id, book_id) pk, page (1-based), char_offset
+//           (into the page's chunked text, see app.js), total_pages,
+//           updated_at. Per reader, so a public book keeps each reader's
+//           own place.
+//   sessions: login sessions, see session-store.js
 //
 // Per-user isolation: every book query is scoped by user_id. The requireAuth
 // middleware ensures the session is present; controllers additionally filter
@@ -67,6 +72,17 @@ function getDb() {
   if (!bookCols.has("shared_at")) {
     _db.exec("ALTER TABLE books ADD COLUMN shared_at INTEGER");
   }
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS reading_progress (
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      book_id     INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      page        INTEGER NOT NULL,
+      char_offset INTEGER NOT NULL DEFAULT 0,
+      total_pages INTEGER,
+      updated_at  INTEGER NOT NULL,
+      PRIMARY KEY (user_id, book_id)
+    );
+  `);
   // Partial index for the public feed (only rows where it matters).
   _db.exec(
     "CREATE INDEX IF NOT EXISTS books_public_shared_idx ON books(visibility, shared_at DESC) WHERE visibility = 'public'"

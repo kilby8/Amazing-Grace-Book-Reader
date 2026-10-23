@@ -33,7 +33,7 @@ node server.js          # listens on http://127.0.0.1:8770
 ```
 
 **Storage layout:**
-- `data/library.db` — SQLite (WAL mode), `users` + `books` tables
+- `data/library.db` — SQLite (WAL mode): `users`, `books`, `reading_progress`, and `sessions` (logins survive restarts)
 - `data/books/<user-id>/<filename>` — raw uploads, per-user folders
 - Both gitignored
 

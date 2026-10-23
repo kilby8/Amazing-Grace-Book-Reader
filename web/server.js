@@ -2,7 +2,7 @@
 //
 // Serves:
 //   - /api/auth/*  (register, login, logout, me)
-//   - /api/books   (list, upload, fetch file, delete)
+//   - /api/books   (list, upload, fetch file, delete, reading progress)
 //   - /api/tts     (ElevenLabs proxy - keeps API key off the wire)
 //   - static files from this directory (index.html, styles.css, app.js, ...)
 //
@@ -10,7 +10,8 @@
 //   <repo>/data/library.db                       - SQLite database
 //   <repo>/data/books/<user-id>/<filename>      - book files
 //
-// Session cookies are httpOnly + sameSite=lax, 7-day expiry. In production,
+// Session cookies are httpOnly + sameSite=lax, 7-day expiry. Sessions are
+// stored in library.db so logins survive restarts. In production,
 // SESSION_SECRET should be set to a random value; the dev default is fine
 // for local single-user use but not for anything exposed to the internet.
 
@@ -24,6 +25,7 @@ const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
 const { getDb, closeDb } = require("./db");
+const { SqliteSessionStore } = require("./session-store");
 const {
   createUser,
   verifyUser,
@@ -122,9 +124,11 @@ app.use(
 );
 app.use(express.json({ limit: "64kb" }));
 
+const sessionStore = new SqliteSessionStore();
 app.use(
   session({
     name: "agr.sid",
+    store: sessionStore,
     secret: SESSION_SECRET || "dev-only-secret-replace-in-production-AGR",
     resave: false,
     saveUninitialized: false,
@@ -275,7 +279,13 @@ app.get("/api/books", requireAuth, (req, res) => {
   const db = getDb();
   const books = db
     .prepare(
-      "SELECT id, title, author, kind, size, added_at, last_opened_at, visibility, shared_at FROM books WHERE user_id = ? ORDER BY added_at DESC"
+      `SELECT b.id, b.title, b.author, b.kind, b.size, b.added_at, b.last_opened_at,
+              b.visibility, b.shared_at,
+              p.page AS progress_page, p.total_pages AS progress_total_pages
+       FROM books b
+       LEFT JOIN reading_progress p ON p.book_id = b.id AND p.user_id = b.user_id
+       WHERE b.user_id = ?
+       ORDER BY b.added_at DESC`
     )
     .all(req.session.userId);
   res.json({ books });
@@ -353,6 +363,58 @@ app.get("/api/books/:id/file", requireAuth, (req, res) => {
   }
   res.setHeader("Content-Type", book.kind === "pdf" ? "application/pdf" : "application/epub+zip");
   fs.createReadStream(resolved).pipe(res);
+});
+
+// ----- Reading progress -----
+// Each reader keeps their own place in a book. Readable for any book the
+// caller can open (their own, or a public one); same 404 as /file otherwise.
+
+function readableBook(db, id, userId) {
+  const book = db.prepare("SELECT id, user_id, visibility FROM books WHERE id = ?").get(id);
+  if (!book) return null;
+  if (book.user_id !== userId && book.visibility !== "public") return null;
+  return book;
+}
+
+app.get("/api/books/:id/progress", requireAuth, (req, res) => {
+  const db = getDb();
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "Bad id" });
+  if (!readableBook(db, id, req.session.userId)) return res.status(404).json({ error: "Not found" });
+  const progress = db
+    .prepare(
+      "SELECT page, char_offset, total_pages, updated_at FROM reading_progress WHERE user_id = ? AND book_id = ?"
+    )
+    .get(req.session.userId, id);
+  res.json({ progress: progress || null });
+});
+
+// POST (not PUT) so the reader can save with navigator.sendBeacon when the
+// tab closes.
+app.post("/api/books/:id/progress", requireAuth, (req, res) => {
+  const db = getDb();
+  const id = Number(req.params.id);
+  if (!Number.isFinite(id)) return res.status(400).json({ error: "Bad id" });
+  if (!readableBook(db, id, req.session.userId)) return res.status(404).json({ error: "Not found" });
+  const { page, char_offset, total_pages } = req.body || {};
+  const p = Number(page);
+  const off = Number(char_offset || 0);
+  const total = total_pages == null ? null : Number(total_pages);
+  if (!Number.isInteger(p) || p < 1) return res.status(400).json({ error: "page must be a positive integer" });
+  if (!Number.isInteger(off) || off < 0) return res.status(400).json({ error: "char_offset must be a non-negative integer" });
+  if (total !== null && (!Number.isInteger(total) || total < 1)) {
+    return res.status(400).json({ error: "total_pages must be a positive integer" });
+  }
+  const now = Date.now();
+  db.prepare(
+    `INSERT INTO reading_progress (user_id, book_id, page, char_offset, total_pages, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(user_id, book_id) DO UPDATE SET
+       page = excluded.page, char_offset = excluded.char_offset,
+       total_pages = COALESCE(excluded.total_pages, reading_progress.total_pages),
+       updated_at = excluded.updated_at`
+  ).run(req.session.userId, id, p, off, total, now);
+  res.json({ ok: true, updated_at: now });
 });
 
 // ----- ElevenLabs TTS proxy -----
@@ -497,6 +559,7 @@ const server = app.listen(PORT, HOST, () => {
 function shutdown(signal) {
   console.log(`\n${signal} - shutting down`);
   server.close(() => {
+    sessionStore.close();
     closeDb();
     process.exit(0);
   });
