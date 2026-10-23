@@ -36,9 +36,20 @@ by default; `python serve_local.py --port 8765 --voice eve`).
 - Drop a PDF on the page, or click the drop zone to pick one.
 - Play / Pause / Stop. Prev / Next jump pages. The page-number box jumps to
   any page. Speed slider: 0.5× – 2.0×. Switching the engine mid-playback
-  restarts the current page on the new engine.
+  carries on from the same sentence on the new engine.
+- Your place in each book is saved as you listen (and on pause, stop, or
+  closing the tab). Reopening a book picks up at that sentence; the library
+  card shows the page you're on. Each reader of a shared book keeps their
+  own place.
 - The "Extracted text" panel at the bottom shows the raw text the page is
   about to read, for sanity-checking the PDF parser output.
+
+## Tests
+
+`npm test` runs `test-progress.mjs`: it starts its own server on a spare
+port with a throwaway data dir, then checks reading progress and sessions.
+Set `CHROME` to a Chrome/Chromium binary to include the browser checks, and
+`CDN_DIR` to serve pdf.js/jszip from a local copy when offline.
 
 ## Privacy
 

@@ -127,6 +127,14 @@ const state = {
   bookTitle: "",
   // The id of the currently loaded book (so "back to library" + reopen works)
   currentBookId: null,
+  // Reading progress. lastCharOffset is where the most recently started
+  // chunk begins in the current page (see chunkStartOffsets). resumeAt is
+  // a pending {page, offset} that the next play on that page starts from.
+  // progressReady stays false until the saved position has been restored,
+  // so loading a book can't overwrite it with page 1.
+  lastCharOffset: 0,
+  resumeAt: null,
+  progressReady: false,
 };
 
 // ----- API helpers -----
@@ -297,13 +305,17 @@ function renderLibrary() {
     const kindLabel = b.kind.toUpperCase();
     const sizeKB = (b.size / 1024).toFixed(0);
     const dateStr = new Date(b.added_at).toLocaleDateString();
+    const unit = b.kind === "epub" ? "Chapter" : "Page";
+    const progressStr = b.progress_page
+      ? ` &middot; ${unit} ${b.progress_page}${b.progress_total_pages ? ` of ${b.progress_total_pages}` : ""}`
+      : "";
     li.innerHTML = `
       <button class="book-card-open" data-id="${b.id}" aria-label="Open ${escapeHtml(b.title)}">
         <div class="book-card-mark" aria-hidden="true">${escapeHtml(kindLabel)}</div>
         <div class="book-card-body">
           <h3 class="book-card-title">${escapeHtml(b.title)}</h3>
           ${b.author ? `<p class="book-card-author">${escapeHtml(b.author)}</p>` : ""}
-          <p class="book-card-meta">${sizeKB} KB &middot; ${escapeHtml(dateStr)}</p>
+          <p class="book-card-meta">${sizeKB} KB &middot; ${escapeHtml(dateStr)}${progressStr}</p>
         </div>
       </button>
       <button class="book-card-share" data-id="${b.id}" aria-pressed="${isPublic}" aria-label="${isPublic ? "Make private" : "Share publicly"}" title="${isPublic ? "Public — anyone signed in can read it" : "Private — only you can read it"}">
@@ -438,10 +450,12 @@ async function openBookFromLibrary(id) {
     // Update last_opened_at locally so the library shows it as recent
     book.last_opened_at = Date.now();
     state.currentBookId = id;
+    state.progressReady = false;
     showScreen("reader");
     applyEngineVisibility();
     syncPlayButton();
     await loadDocument(file);
+    await restoreProgress(id);
   } catch (e) {
     setStatus(`Could not open book: ${e.message}`, "err");
   }
@@ -510,10 +524,12 @@ async function openBookFromPublicLibrary(id) {
     const blob = await res.blob();
     const file = new File([blob], `${book.title}.${book.kind}`, { type: blob.type });
     state.currentBookId = id;
+    state.progressReady = false;
     showScreen("reader");
     applyEngineVisibility();
     syncPlayButton();
     await loadDocument(file);
+    await restoreProgress(id);
   } catch (e) {
     setStatus(`Could not open book: ${e.message}`, "err");
   }
@@ -535,8 +551,9 @@ if (els.backFromPublic) {
 }
 
 els.backToLibrary.addEventListener("click", async () => {
-  // Stop playback before leaving the reader
+  // Stop playback before leaving the reader (stopInternal saves progress)
   await stopInternal();
+  state.progressReady = false;
   state.currentBookId = null;
   state.pdfDoc = null;
   state.pagesText = [];
@@ -850,6 +867,122 @@ function chunkText(text, maxChars) {
   return out;
 }
 
+// ----- reading progress -----
+//
+// A position is (page, char offset). The offset counts characters in the
+// page's chunked text: chunk i starts at the summed length of chunks
+// 0..i-1 plus one separator each. Every engine chunks the same sentence
+// stream (only the max chunk size differs), so an offset saved while
+// listening with one engine lands on the right sentence with another.
+
+function chunkStartOffsets(queue) {
+  const out = [];
+  let pos = 0;
+  for (const c of queue) {
+    out.push(pos);
+    pos += c.length + 1;
+  }
+  return out;
+}
+
+function chunkIndexForOffset(queue, offset) {
+  const starts = chunkStartOffsets(queue);
+  let idx = 0;
+  for (let i = 0; i < starts.length; i++) {
+    if (starts[i] <= offset) idx = i;
+    else break;
+  }
+  return idx;
+}
+
+// Called right after an engine builds the queue for the current page.
+// Returns the chunk index to start from and consumes any pending resume.
+function takeResumeIndex(queue) {
+  const r = state.resumeAt;
+  state.resumeAt = null;
+  if (!r || r.page !== state.currentPage || !r.offset) return 0;
+  return chunkIndexForOffset(queue, r.offset);
+}
+
+// Called whenever a chunk starts playing.
+function noteChunkStart(queue, idx) {
+  state.lastCharOffset = chunkStartOffsets(queue)[idx] || 0;
+  scheduleProgressSave();
+}
+
+function progressPayload() {
+  return JSON.stringify({
+    page: state.currentPage,
+    char_offset: state.lastCharOffset,
+    total_pages: state.pdfDoc ? state.pdfDoc.numPages : undefined,
+  });
+}
+
+function canSaveProgress() {
+  return Boolean(state.user && state.currentBookId && state.pdfDoc && state.progressReady);
+}
+
+let progressSaveTimer = null;
+function scheduleProgressSave() {
+  if (progressSaveTimer) return;
+  progressSaveTimer = setTimeout(() => {
+    progressSaveTimer = null;
+    saveProgressNow();
+  }, 3000);
+}
+
+async function saveProgressNow() {
+  clearTimeout(progressSaveTimer);
+  progressSaveTimer = null;
+  if (!canSaveProgress()) return;
+  try {
+    await api(`/api/books/${state.currentBookId}/progress`, {
+      method: "POST",
+      body: progressPayload(),
+    });
+  } catch (e) {
+    console.warn("Could not save reading position:", e.message);
+  }
+}
+
+// Tab closing / app backgrounded on a phone: a normal fetch may be killed,
+// so hand the save to the browser with sendBeacon.
+function beaconProgress() {
+  if (!canSaveProgress() || !navigator.sendBeacon) return;
+  clearTimeout(progressSaveTimer);
+  progressSaveTimer = null;
+  navigator.sendBeacon(
+    `/api/books/${state.currentBookId}/progress`,
+    new Blob([progressPayload()], { type: "application/json" })
+  );
+}
+window.addEventListener("pagehide", beaconProgress);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") beaconProgress();
+});
+
+async function restoreProgress(bookId) {
+  if (!state.pdfDoc || state.currentBookId !== bookId) return;
+  state.lastCharOffset = 0;
+  state.resumeAt = null;
+  try {
+    const { progress } = await api(`/api/books/${bookId}/progress`);
+    if (state.currentBookId !== bookId) return;
+    if (progress && (progress.page > 1 || progress.char_offset > 0)) {
+      const page = Math.max(1, Math.min(state.pdfDoc.numPages, progress.page));
+      setCurrentPage(page);
+      state.lastCharOffset = page === progress.page ? progress.char_offset : 0;
+      state.resumeAt = { page, offset: state.lastCharOffset };
+      const unit = state.pdfDoc._kind === "epub" ? "chapter" : "page";
+      setStatus(`Picking up where you left off: ${unit} ${page}. Press Play to continue.`, "ok");
+    }
+  } catch (e) {
+    console.warn("Could not load reading position:", e.message);
+  } finally {
+    if (state.currentBookId === bookId) state.progressReady = true;
+  }
+}
+
 // ----- print-page badge + chapter title -----
 function updatePagePrintBadge() {
   const pp = state.pagePrintNumbers && state.pagePrintNumbers[state.currentPage - 1];
@@ -917,8 +1050,10 @@ els.engine.addEventListener("change", () => {
   applyEngineVisibility();
   if (state.isPlaying || state.isPaused) {
     const restartFromPage = state.currentPage;
+    const restartOffset = state.lastCharOffset;
     stopInternal().then(() => {
       setCurrentPage(restartFromPage);
+      state.resumeAt = { page: restartFromPage, offset: restartOffset };
       playFromCurrent();
     });
   }
@@ -929,11 +1064,10 @@ els.speed.addEventListener("input", () => {
   if (state.isPlaying) {
     if (els.engine.value === "browser") {
       const restartFromPage = state.currentPage;
-      const remaining = state.browserQueue.slice(state.browserIndex);
+      const restartOffset = state.lastCharOffset;
       stopInternal().then(() => {
-        state.browserQueue = remaining;
-        state.browserIndex = 0;
         setCurrentPage(restartFromPage);
+        state.resumeAt = { page: restartFromPage, offset: restartOffset };
         playFromCurrent();
       });
     } else if (pocketSource) {
@@ -1064,6 +1198,7 @@ function pauseInternal() {
   els.play.disabled = false;
   els.pause.disabled = true;
   syncPlayButton();
+  saveProgressNow();
 }
 
 function resumeInternal() {
@@ -1129,6 +1264,9 @@ async function stopInternal() {
   syncPlayButton();
   stopPosTicker();
   resetAudioPosUI();
+  // Not awaited: the URL and payload are captured synchronously, and
+  // prev/next shouldn't wait on the network before playing the next page.
+  saveProgressNow();
 }
 
 function playBrowserFromCurrent() {
@@ -1148,7 +1286,7 @@ function playBrowserFromCurrent() {
   }
   const text = state.pagesText[state.currentPage - 1] || "";
   state.browserQueue = chunkText(text, MAX_CHARS_BROWSER);
-  state.browserIndex = 0;
+  state.browserIndex = takeResumeIndex(state.browserQueue);
   if (state.browserQueue.length === 0) {
     setStatus(`Page ${state.currentPage} has no extractable text.`, "err");
     return;
@@ -1178,6 +1316,7 @@ function speakNextBrowserChunk() {
     return;
   }
   const text = state.browserQueue[state.browserIndex];
+  noteChunkStart(state.browserQueue, state.browserIndex);
   const u = new SpeechSynthesisUtterance(text);
   const rate = Number(els.speed.value);
   if (rate) u.rate = rate;
@@ -1220,7 +1359,7 @@ function playPocketFromCurrent() {
   }
   const text = state.pagesText[state.currentPage - 1] || "";
   state.pocketQueue = chunkText(text, MAX_CHARS_POCKET);
-  state.pocketIndex = 0;
+  state.pocketIndex = takeResumeIndex(state.pocketQueue);
   state.abortPocket = false;
   state.pocketPlayToken = (state.pocketPlayToken || 0) + 1;
   state.pocketBuffers = new Array(state.pocketQueue.length).fill(null);
@@ -1238,7 +1377,7 @@ function playPocketFromCurrent() {
   syncPlayButton();
   try { getAudioCtx().resume(); } catch (_) {}
   const myToken = state.pocketPlayToken;
-  fetchAndDecodeChunk(0)
+  fetchAndDecodeChunk(state.pocketIndex)
     .then(() => {
       if (state.abortPocket) return;
       if (state.pocketPlayToken !== myToken) return;
@@ -1334,6 +1473,7 @@ function playDecodedChunk(buffer) {
   source.playbackRate.value = Number(els.speed.value) || 1.0;
   source.connect(ctx.destination);
   pocketSource = source;
+  noteChunkStart(state.pocketQueue, state.pocketIndex);
   // Stash the audioCtx timestamp at start so the position ticker can
   // compute elapsed time within this chunk (accounting for current speed).
   source._startCtxTime = ctx.currentTime;
@@ -1370,7 +1510,7 @@ function playElevenLabsFromCurrent() {
   }
   const text = state.pagesText[state.currentPage - 1] || "";
   state.elevenLabsQueue = chunkText(text, MAX_CHARS_ELEVENLABS);
-  state.elevenLabsIndex = 0;
+  state.elevenLabsIndex = takeResumeIndex(state.elevenLabsQueue);
   state.abortElevenLabs = false;
   state.elevenLabsPlayToken = (state.elevenLabsPlayToken || 0) + 1;
   state.elevenLabsBuffers = new Array(state.elevenLabsQueue.length).fill(null);
@@ -1387,7 +1527,7 @@ function playElevenLabsFromCurrent() {
   syncPlayButton();
   try { getAudioCtx().resume(); } catch (_) {}
   const myToken = state.elevenLabsPlayToken;
-  fetchAndDecodeElevenLabsChunk(0)
+  fetchAndDecodeElevenLabsChunk(state.elevenLabsIndex)
     .then(() => {
       if (state.abortElevenLabs) return;
       if (state.elevenLabsPlayToken !== myToken) return;
@@ -1487,6 +1627,7 @@ function playElevenLabsDecodedChunk(buffer) {
   source.playbackRate.value = Number(els.speed.value) || 1.0;
   source.connect(ctx.destination);
   pocketSource = source; // shared with pocket - we only ever have one playback pipeline live
+  noteChunkStart(state.elevenLabsQueue, state.elevenLabsIndex);
   source._startCtxTime = ctx.currentTime;
   source.onended = () => {
     if (pocketSource !== source) return;
