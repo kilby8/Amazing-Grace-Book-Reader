@@ -422,9 +422,7 @@ async function uploadFile(file) {
   }
   setStatus(`Uploading ${file.name}…`, "busy");
   try {
-    const form = new FormData();
-    form.append("file", file);
-    const { book } = await api("/api/books", { method: "POST", body: form });
+    const book = await uploadBook(file);
     setStatus(`Saved "${book.title}"`, "ok");
     // Insert at top of list and open it
     state.books = [book, ...state.books.filter((b) => b.id !== book.id)];
@@ -435,6 +433,50 @@ async function uploadFile(file) {
   }
 }
 
+// The server says where the file goes: through it (local storage), or
+// straight to Supabase Storage, after which we tell it the upload is done.
+async function uploadBook(file) {
+  const target = await api("/api/books/uploads", {
+    method: "POST",
+    body: JSON.stringify({ filename: file.name, size: file.size }),
+  });
+  if (target.mode === "local") {
+    const form = new FormData();
+    form.append("file", file);
+    const { book } = await api("/api/books", { method: "POST", body: form });
+    return book;
+  }
+  const isEpub = file.name.toLowerCase().endsWith(".epub");
+  const res = await fetch(target.url, {
+    method: "POST",
+    headers: {
+      ...target.headers,
+      "Content-Type": file.type || (isEpub ? "application/epub+zip" : "application/pdf"),
+    },
+    body: file,
+  });
+  if (!res.ok) {
+    const j = await res.json().catch(() => ({}));
+    throw new Error(j.message || j.error || `storage HTTP ${res.status}`);
+  }
+  const { book } = await api("/api/books/uploads/complete", {
+    method: "POST",
+    body: JSON.stringify({ objectPath: target.objectPath }),
+  });
+  return book;
+}
+
+async function fetchBookBlob(id) {
+  const where = await api(`/api/books/${id}/download`);
+  const sameOrigin = where.url.startsWith("/");
+  const res = await fetch(where.url, {
+    headers: where.headers || {},
+    credentials: sameOrigin ? "same-origin" : "omit",
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.blob();
+}
+
 async function openBookFromLibrary(id) {
   const book = state.books.find((b) => b.id === id);
   if (!book) {
@@ -443,9 +485,7 @@ async function openBookFromLibrary(id) {
   }
   setStatus(`Loading "${book.title}"…`, "busy");
   try {
-    const res = await fetch(`/api/books/${id}/file`, { credentials: "same-origin" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
+    const blob = await fetchBookBlob(id);
     const file = new File([blob], `${book.title}.${book.kind}`, { type: blob.type });
     // Update last_opened_at locally so the library shows it as recent
     book.last_opened_at = Date.now();
@@ -519,9 +559,7 @@ async function openBookFromPublicLibrary(id) {
   }
   setStatus(`Loading "${book.title}"…`, "busy");
   try {
-    const res = await fetch(`/api/books/${id}/file`, { credentials: "same-origin" });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const blob = await res.blob();
+    const blob = await fetchBookBlob(id);
     const file = new File([blob], `${book.title}.${book.kind}`, { type: blob.type });
     state.currentBookId = id;
     state.progressReady = false;

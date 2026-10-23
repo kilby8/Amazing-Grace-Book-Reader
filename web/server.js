@@ -2,16 +2,20 @@
 //
 // Serves:
 //   - /api/auth/*  (register, login, logout, me)
-//   - /api/books   (list, upload, fetch file, delete, reading progress)
+//   - /api/books   (list, upload, download, delete, reading progress)
 //   - /api/tts     (ElevenLabs proxy - keeps API key off the wire)
-//   - static files from this directory (index.html, styles.css, app.js, ...)
+//   - /api/health  (database reachability, for deploy checks)
+//   - static files from ./public (index.html, styles.css, app.js)
 //
-// Storage layout:
-//   <repo>/data/library.db                       - SQLite database
-//   <repo>/data/books/<user-id>/<filename>      - book files
+// Storage (see db.js and storage.js):
+//   local:  <repo>/data/library.db (SQLite) + <repo>/data/books/<user-id>/
+//   hosted: Postgres via DATABASE_URL + Supabase Storage via SUPABASE_URL
+//
+// Runs as a normal server (`node server.js`) or as a serverless function:
+// api/index.js re-exports the app for Vercel.
 //
 // Session cookies are httpOnly + sameSite=lax, 7-day expiry. Sessions are
-// stored in library.db so logins survive restarts. In production,
+// stored in the database so logins survive restarts. In production,
 // SESSION_SECRET should be set to a random value; the dev default is fine
 // for local single-user use but not for anything exposed to the internet.
 
@@ -24,8 +28,9 @@ const multer = require("multer");
 const helmet = require("helmet");
 const rateLimit = require("express-rate-limit");
 
-const { getDb, closeDb } = require("./db");
-const { SqliteSessionStore } = require("./session-store");
+const { query, queryOne, closeDb } = require("./db");
+const { DbSessionStore } = require("./session-store");
+const storage = require("./storage");
 const {
   createUser,
   verifyUser,
@@ -46,7 +51,7 @@ const DATA_DIR = process.env.DATA_DIR
   ? path.resolve(process.env.DATA_DIR)
   : path.resolve(__dirname, "..", "data");
 const BOOKS_DIR = path.join(DATA_DIR, "books");
-const STATIC_DIR = __dirname;
+const STATIC_DIR = path.join(__dirname, "public");
 const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MB
 
 // ElevenLabs: read the API key at request time from the credentials file
@@ -77,18 +82,22 @@ function loadElevenLabsKey() {
   }
 }
 
-fs.mkdirSync(BOOKS_DIR, { recursive: true });
+if (storage.MODE === "local") fs.mkdirSync(BOOKS_DIR, { recursive: true });
+
+// Express 4 doesn't route rejected promises to the error handler.
+const wrap = (fn) => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next);
 
 const app = express();
 app.disable("x-powered-by");
-// Trust the first proxy hop (Caddy) when behind HTTPS; required for
-// express-rate-limit to see the real client IP and for secure cookies
-// to flow correctly.
+// Trust the first proxy hop (Caddy, or Vercel's edge) when behind HTTPS;
+// required for express-rate-limit to see the real client IP and for secure
+// cookies to flow correctly.
 if (IS_PROD) app.set("trust proxy", 1);
 // Security headers (CSP allows the CDN scripts + Google Fonts + style
 // inline attributes the reader UI relies on). Loopback hosts are
 // permitted in connect-src so the pocket-tts engine (which lives at
-// 127.0.0.1:8765 on the reader's own box) can be reached.
+// 127.0.0.1:8765 on the reader's own box) can be reached; the Supabase
+// origin is permitted when books live in Supabase Storage.
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -110,6 +119,7 @@ app.use(
           "'self'",
           "http://127.0.0.1:*",
           "http://localhost:*",
+          ...(storage.MODE === "supabase" ? [storage.SUPABASE_URL] : []),
         ],
         mediaSrc: ["'self'", "blob:"],
         objectSrc: ["'self'", "blob:"],
@@ -124,7 +134,7 @@ app.use(
 );
 app.use(express.json({ limit: "64kb" }));
 
-const sessionStore = new SqliteSessionStore();
+const sessionStore = new DbSessionStore();
 app.use(
   session({
     name: "agr.sid",
@@ -161,7 +171,7 @@ const ttsLimiter = rateLimit({
   message: { error: "TTS rate limit hit, slow down." },
 });
 
-// ----- Multer setup: per-user destination, sanitized filename -----
+// ----- Multer setup (local storage only): per-user destination, sanitized filename -----
 const upload = multer({
   storage: multer.diskStorage({
     destination(req, file, cb) {
@@ -172,9 +182,7 @@ const upload = multer({
     filename(req, file, cb) {
       // Strip path separators and shell-unsafe chars from the original
       // filename. Prepend a timestamp to avoid collisions.
-      const base = path.basename(file.originalname || "book");
-      const safe = base.replace(/[^a-zA-Z0-9._-]/g, "_").slice(0, 120) || "book";
-      cb(null, `${Date.now()}-${safe}`);
+      cb(null, `${Date.now()}-${storage.safeFilename(file.originalname)}`);
     },
   }),
   limits: { fileSize: MAX_UPLOAD_BYTES },
@@ -194,6 +202,27 @@ function deriveTitle(originalName) {
     .replace(/\s+/g, " ")
     .trim() || "Untitled";
 }
+
+function bookId(req, res) {
+  const id = Number(req.params.id);
+  if (!Number.isInteger(id)) {
+    res.status(400).json({ error: "Bad id" });
+    return null;
+  }
+  return id;
+}
+
+// ----- Health -----
+
+app.get("/api/health", wrap(async (req, res) => {
+  try {
+    await query("SELECT 1 AS ok");
+    res.json({ ok: true, storage: storage.MODE });
+  } catch (e) {
+    console.error("health check failed:", e);
+    res.status(503).json({ ok: false, error: "database unreachable" });
+  }
+}));
 
 // ----- Auth endpoints -----
 
@@ -251,7 +280,23 @@ app.get("/api/me", (req, res) => {
 
 // ----- Books endpoints -----
 
-app.post("/api/books", requireAuth, upload.single("file"), (req, res) => {
+const BOOK_COLUMNS = "id, title, author, kind, size, added_at, last_opened_at, visibility, shared_at";
+
+async function insertBook(userId, { title, author, kind, filename, size }) {
+  return queryOne(
+    `INSERT INTO books (user_id, title, author, kind, filename, size)
+     VALUES (?, ?, ?, ?, ?, ?) RETURNING ${BOOK_COLUMNS}`,
+    [userId, title, author, kind, filename, size]
+  );
+}
+
+// Upload, local storage: the file comes through this server.
+app.post("/api/books", requireAuth, (req, res, next) => {
+  if (storage.MODE !== "local") {
+    return res.status(400).json({ error: "Upload with /api/books/uploads on this server" });
+  }
+  next();
+}, upload.single("file"), wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   const kind = detectKind(req.file.originalname);
   if (!kind) {
@@ -259,93 +304,146 @@ app.post("/api/books", requireAuth, upload.single("file"), (req, res) => {
     try { fs.unlinkSync(req.file.path); } catch (_) {}
     return res.status(400).json({ error: "Only PDF and EPUB files are supported" });
   }
-  const db = getDb();
-  const title = (req.body && req.body.title) || deriveTitle(req.file.originalname);
-  const author = (req.body && req.body.author) || null;
-  const info = db
-    .prepare(
-      "INSERT INTO books (user_id, title, author, kind, filename, size) VALUES (?, ?, ?, ?, ?, ?)"
-    )
-    .run(req.session.userId, title, author, kind, req.file.filename, req.file.size);
-  const book = db
-    .prepare(
-      "SELECT id, title, author, kind, size, added_at, last_opened_at FROM books WHERE id = ?"
-    )
-    .get(info.lastInsertRowid);
+  const book = await insertBook(req.session.userId, {
+    title: (req.body && req.body.title) || deriveTitle(req.file.originalname),
+    author: (req.body && req.body.author) || null,
+    kind,
+    filename: req.file.filename,
+    size: req.file.size,
+  });
   res.json({ book });
-});
+}));
 
-app.get("/api/books", requireAuth, (req, res) => {
-  const db = getDb();
-  const books = db
-    .prepare(
-      `SELECT b.id, b.title, b.author, b.kind, b.size, b.added_at, b.last_opened_at,
-              b.visibility, b.shared_at,
-              p.page AS progress_page, p.total_pages AS progress_total_pages
-       FROM books b
-       LEFT JOIN reading_progress p ON p.book_id = b.id AND p.user_id = b.user_id
-       WHERE b.user_id = ?
-       ORDER BY b.added_at DESC`
-    )
-    .all(req.session.userId);
+// Upload, step 1: ask where to put the file. Local storage answers
+// {mode:"local"} (POST the file to /api/books); Supabase Storage answers
+// with a URL and headers the browser uploads to directly.
+app.post("/api/books/uploads", requireAuth, wrap(async (req, res) => {
+  if (storage.MODE === "local") return res.json({ mode: "local" });
+  const { filename, size } = req.body || {};
+  const kind = detectKind(filename);
+  if (!kind) return res.status(400).json({ error: "Only PDF and EPUB files are supported" });
+  const target = await storage.createUpload(req.session.userId, filename);
+  if (Number(size) > target.maxBytes) {
+    return res.status(413).json({ error: `File too large (${Math.round(target.maxBytes / 1048576)} MB max)` });
+  }
+  // Remember what this session is uploading so step 2 can't claim
+  // someone else's object.
+  req.session.pendingUploads = {
+    ...(req.session.pendingUploads || {}),
+    [target.objectPath]: { filename: String(filename), kind },
+  };
+  res.json({ mode: "supabase", objectPath: target.objectPath, url: target.url, headers: target.headers });
+}));
+
+// Upload, step 2 (Supabase Storage): the browser finished uploading.
+app.post("/api/books/uploads/complete", requireAuth, wrap(async (req, res) => {
+  const { objectPath, title, author } = req.body || {};
+  const pendingUploads = req.session.pendingUploads || {};
+  const pending = Object.hasOwn(pendingUploads, String(objectPath)) ? pendingUploads[objectPath] : null;
+  if (!pending) return res.status(400).json({ error: "Unknown upload" });
+  const size = await storage.uploadedSize(objectPath);
+  if (size === null) return res.status(400).json({ error: "Upload not found in storage" });
+  await storage.finishUpload(objectPath);
+  delete req.session.pendingUploads[objectPath];
+  const book = await insertBook(req.session.userId, {
+    title: title || deriveTitle(pending.filename),
+    author: author || null,
+    kind: pending.kind,
+    filename: objectPath,
+    size,
+  });
+  res.json({ book });
+}));
+
+app.get("/api/books", requireAuth, wrap(async (req, res) => {
+  const books = await query(
+    `SELECT b.id, b.title, b.author, b.kind, b.size, b.added_at, b.last_opened_at,
+            b.visibility, b.shared_at,
+            p.page AS progress_page, p.total_pages AS progress_total_pages
+     FROM books b
+     LEFT JOIN reading_progress p ON p.book_id = b.id AND p.user_id = b.user_id
+     WHERE b.user_id = ?
+     ORDER BY b.added_at DESC`,
+    [req.session.userId]
+  );
   res.json({ books });
-});
+}));
 
 // ----- Public library -----
 // Authenticated users only. Lists every book marked public across all users,
 // joined with the uploader's username so the UI can show "Shared by @...".
 // Sorted by shared_at DESC so the most recent shares surface first.
-app.get("/api/public-books", requireAuth, (req, res) => {
-  const db = getDb();
-  const books = db
-    .prepare(
-      `SELECT b.id, b.title, b.author, b.kind, b.size, b.shared_at,
-              u.username AS shared_by
-       FROM books b
-       JOIN users u ON u.id = b.user_id
-       WHERE b.visibility = 'public'
-       ORDER BY b.shared_at DESC, b.id DESC`
-    )
-    .all();
+app.get("/api/public-books", requireAuth, wrap(async (req, res) => {
+  const books = await query(
+    `SELECT b.id, b.title, b.author, b.kind, b.size, b.shared_at,
+            u.username AS shared_by
+     FROM books b
+     JOIN users u ON u.id = b.user_id
+     WHERE b.visibility = 'public'
+     ORDER BY b.shared_at DESC, b.id DESC`
+  );
   res.json({ books });
-});
+}));
 
 // Toggle a book's visibility. Owner-only; idempotent.
-app.post("/api/books/:id/visibility", requireAuth, (req, res) => {
-  const db = getDb();
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: "Bad id" });
+app.post("/api/books/:id/visibility", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
   const visibility = req.body && req.body.visibility;
   if (visibility !== "private" && visibility !== "public") {
     return res.status(400).json({ error: "visibility must be 'private' or 'public'" });
   }
-  const book = db
-    .prepare("SELECT id, user_id FROM books WHERE id = ?")
-    .get(id);
+  const book = await queryOne("SELECT id, user_id FROM books WHERE id = ?", [id]);
   if (!book) return res.status(404).json({ error: "Not found" });
   if (book.user_id !== req.session.userId) {
     return res.status(403).json({ error: "Not your book" });
   }
   // shared_at is set when promoting to public, cleared when demoting.
   const sharedAt = visibility === "public" ? Date.now() : null;
-  db.prepare(
-    "UPDATE books SET visibility = ?, shared_at = ? WHERE id = ?"
-  ).run(visibility, sharedAt, id);
+  await query("UPDATE books SET visibility = ?, shared_at = ? WHERE id = ?", [visibility, sharedAt, id]);
   res.json({ ok: true, visibility, shared_at: sharedAt });
-});
+}));
 
-app.get("/api/books/:id/file", requireAuth, (req, res) => {
-  const db = getDb();
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: "Bad id" });
-  // Owner check is conditional: public books are readable by any logged-in user.
-  const book = db
-    .prepare("SELECT id, user_id, kind, filename, visibility FROM books WHERE id = ?")
-    .get(id);
+// A book the caller may open: their own, or a public one. Owner check is
+// conditional, and a private book of someone else's looks like a 404.
+async function readableBook(id, userId) {
+  const book = await queryOne(
+    "SELECT id, user_id, kind, filename, visibility FROM books WHERE id = ?",
+    [id]
+  );
+  if (!book) return null;
+  if (book.user_id !== userId && book.visibility !== "public") return null;
+  return book;
+}
+
+// Only the owner's own reads count as "last opened" - opening a public
+// book shouldn't update the owner's library state.
+async function markOpened(book, userId) {
+  if (book.user_id === userId) {
+    await query("UPDATE books SET last_opened_at = ? WHERE id = ?", [Date.now(), book.id]);
+  }
+}
+
+// Where the browser fetches the book file from: this server (local
+// storage) or a short-lived Supabase Storage URL.
+app.get("/api/books/:id/download", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
+  const book = await readableBook(id, req.session.userId);
   if (!book) return res.status(404).json({ error: "Not found" });
-  const isOwner = book.user_id === req.session.userId;
-  const isPublic = book.visibility === "public";
-  if (!isOwner && !isPublic) return res.status(404).json({ error: "Not found" });
+  await markOpened(book, req.session.userId);
+  if (storage.MODE === "local") {
+    return res.json({ url: `/api/books/${id}/file`, headers: {} });
+  }
+  res.json(await storage.createDownload(book.filename));
+}));
+
+app.get("/api/books/:id/file", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
+  if (storage.MODE !== "local") return res.status(404).json({ error: "Use /api/books/:id/download" });
+  const book = await readableBook(id, req.session.userId);
+  if (!book) return res.status(404).json({ error: "Not found" });
   // Path is always scoped to the OWNER's directory (files never move when shared).
   const filePath = path.join(BOOKS_DIR, String(book.user_id), book.filename);
   // path.join already constrains to BOOKS_DIR; double-check before sending
@@ -356,46 +454,32 @@ app.get("/api/books/:id/file", requireAuth, (req, res) => {
   if (!fs.existsSync(resolved)) {
     return res.status(404).json({ error: "File missing on disk" });
   }
-  // Only the owner's own reads count as "last opened" - opening a public
-  // book shouldn't update the owner's library state.
-  if (isOwner) {
-    db.prepare("UPDATE books SET last_opened_at = ? WHERE id = ?").run(Date.now(), book.id);
-  }
+  await markOpened(book, req.session.userId);
   res.setHeader("Content-Type", book.kind === "pdf" ? "application/pdf" : "application/epub+zip");
   fs.createReadStream(resolved).pipe(res);
-});
+}));
 
 // ----- Reading progress -----
 // Each reader keeps their own place in a book. Readable for any book the
 // caller can open (their own, or a public one); same 404 as /file otherwise.
 
-function readableBook(db, id, userId) {
-  const book = db.prepare("SELECT id, user_id, visibility FROM books WHERE id = ?").get(id);
-  if (!book) return null;
-  if (book.user_id !== userId && book.visibility !== "public") return null;
-  return book;
-}
-
-app.get("/api/books/:id/progress", requireAuth, (req, res) => {
-  const db = getDb();
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: "Bad id" });
-  if (!readableBook(db, id, req.session.userId)) return res.status(404).json({ error: "Not found" });
-  const progress = db
-    .prepare(
-      "SELECT page, char_offset, total_pages, updated_at FROM reading_progress WHERE user_id = ? AND book_id = ?"
-    )
-    .get(req.session.userId, id);
-  res.json({ progress: progress || null });
-});
+app.get("/api/books/:id/progress", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
+  if (!(await readableBook(id, req.session.userId))) return res.status(404).json({ error: "Not found" });
+  const progress = await queryOne(
+    "SELECT page, char_offset, total_pages, updated_at FROM reading_progress WHERE user_id = ? AND book_id = ?",
+    [req.session.userId, id]
+  );
+  res.json({ progress });
+}));
 
 // POST (not PUT) so the reader can save with navigator.sendBeacon when the
 // tab closes.
-app.post("/api/books/:id/progress", requireAuth, (req, res) => {
-  const db = getDb();
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: "Bad id" });
-  if (!readableBook(db, id, req.session.userId)) return res.status(404).json({ error: "Not found" });
+app.post("/api/books/:id/progress", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
+  if (!(await readableBook(id, req.session.userId))) return res.status(404).json({ error: "Not found" });
   const { page, char_offset, total_pages } = req.body || {};
   const p = Number(page);
   const off = Number(char_offset || 0);
@@ -406,16 +490,17 @@ app.post("/api/books/:id/progress", requireAuth, (req, res) => {
     return res.status(400).json({ error: "total_pages must be a positive integer" });
   }
   const now = Date.now();
-  db.prepare(
+  await query(
     `INSERT INTO reading_progress (user_id, book_id, page, char_offset, total_pages, updated_at)
      VALUES (?, ?, ?, ?, ?, ?)
      ON CONFLICT(user_id, book_id) DO UPDATE SET
        page = excluded.page, char_offset = excluded.char_offset,
        total_pages = COALESCE(excluded.total_pages, reading_progress.total_pages),
-       updated_at = excluded.updated_at`
-  ).run(req.session.userId, id, p, off, total, now);
+       updated_at = excluded.updated_at`,
+    [req.session.userId, id, p, off, total, now]
+  );
   res.json({ ok: true, updated_at: now });
-});
+}));
 
 // ----- ElevenLabs TTS proxy -----
 //
@@ -520,23 +605,26 @@ app.post("/api/tts", requireAuth, ttsLimiter, async (req, res, next) => {
   }
 });
 
-app.delete("/api/books/:id", requireAuth, (req, res) => {
-  const db = getDb();
-  const id = Number(req.params.id);
-  if (!Number.isFinite(id)) return res.status(400).json({ error: "Bad id" });
-  const book = db
-    .prepare("SELECT id, filename FROM books WHERE id = ? AND user_id = ?")
-    .get(id, req.session.userId);
+app.delete("/api/books/:id", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
+  const book = await queryOne(
+    "SELECT id, filename FROM books WHERE id = ? AND user_id = ?",
+    [id, req.session.userId]
+  );
   if (!book) return res.status(404).json({ error: "Not found" });
-  const filePath = path.join(BOOKS_DIR, String(req.session.userId), book.filename);
-  db.prepare("DELETE FROM books WHERE id = ?").run(book.id);
-  try { fs.unlinkSync(filePath); } catch (_) { /* already gone */ }
+  await query("DELETE FROM books WHERE id = ?", [book.id]);
+  if (storage.MODE === "local") {
+    const filePath = path.join(BOOKS_DIR, String(req.session.userId), book.filename);
+    try { fs.unlinkSync(filePath); } catch (_) { /* already gone */ }
+  } else {
+    await storage.remove(book.filename);
+  }
   res.json({ ok: true });
-});
+}));
 
 // ----- Static files -----
 // index.html is served at "/" and the API endpoints live under "/api/*".
-// Multer's body parser doesn't apply to GET so this is safe.
 app.use(express.static(STATIC_DIR, { index: "index.html" }));
 
 // 404 for unknown API routes
@@ -551,18 +639,23 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: "Server error" });
 });
 
-const server = app.listen(PORT, HOST, () => {
-  console.log(`Amazing Grace Reader listening on http://${HOST}:${PORT}`);
-  console.log(`  data dir: ${DATA_DIR}`);
-});
+module.exports = app;
 
-function shutdown(signal) {
-  console.log(`\n${signal} - shutting down`);
-  server.close(() => {
-    sessionStore.close();
-    closeDb();
-    process.exit(0);
+if (require.main === module) {
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`Amazing Grace Reader listening on http://${HOST}:${PORT}`);
+    console.log(`  database: ${process.env.DATABASE_URL ? "postgres" : "sqlite"} · storage: ${storage.MODE}`);
+    if (storage.MODE === "local") console.log(`  data dir: ${DATA_DIR}`);
   });
+
+  const shutdown = (signal) => {
+    console.log(`\n${signal} - shutting down`);
+    server.close(async () => {
+      sessionStore.close();
+      await closeDb();
+      process.exit(0);
+    });
+  };
+  process.on("SIGINT", () => shutdown("SIGINT"));
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
 }
-process.on("SIGINT", () => shutdown("SIGINT"));
-process.on("SIGTERM", () => shutdown("SIGTERM"));
