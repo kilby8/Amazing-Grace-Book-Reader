@@ -106,7 +106,11 @@ check("B can download it once public", r.status === 200 && r.json.url);
 
 r = await a(`/api/books/${book.id}`, { method: "DELETE" });
 check("delete", r.status === 200);
-const gone = await fetch(dl.url, { headers: dl.headers });
+r = await a(`/api/books/${book.id}/download`);
+check("deleted book is gone from the library", r.status === 404, String(r.status));
+// Storage's CDN may still hold the earlier response for this exact URL, so
+// ask with a query string it hasn't seen.
+const gone = await fetch(`${dl.url}?after_delete=${Date.now()}`, { headers: dl.headers });
 check("file removed from Storage", !gone.ok, String(gone.status));
 
 r = await a("/api/auth/logout", { method: "POST" });

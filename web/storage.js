@@ -104,7 +104,9 @@ async function remove(objectPath) {
       console.error(`Storage delete failed for ${objectPath}: HTTP ${res.status}`);
     }
   } finally {
-    await revokeTicket(objectPath, "delete");
+    // Drop every ticket for the path, so a still-live read ticket can't
+    // outlast the book.
+    await query("DELETE FROM storage_tickets WHERE object_path = ?", [objectPath]);
   }
 }
 
