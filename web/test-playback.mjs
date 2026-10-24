@@ -19,6 +19,7 @@ import { mkdtempSync, rmSync, existsSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { startCdn } from "./test-cdn.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SCALE = Number(process.env.SCALE || 0.25);
@@ -128,10 +129,13 @@ for (let i = 0; i < 50; i++) {
 
 const { default: puppeteer } = await import("puppeteer-core");
 const extraArgs = (process.env.CHROME_ARGS || "").split(" ").filter(Boolean);
+// CDN_DIR serves the cdnjs scripts from a local copy; see test-cdn.mjs.
+const cdn = await startCdn(process.env.CDN_DIR);
 const browser = await puppeteer.launch({
   executablePath: CHROME,
   headless: true,
-  args: ["--no-sandbox", "--disable-gpu", "--autoplay-policy=no-user-gesture-required", ...extraArgs],
+  protocolTimeout: 900000,
+  args: ["--no-sandbox", "--disable-gpu", "--autoplay-policy=no-user-gesture-required", ...extraArgs, ...(cdn ? cdn.chromeArgs : [])],
 });
 const pageErrors = [];
 let lastPage = null;
@@ -155,19 +159,6 @@ try {
   page.on("console", (m) => { if (m.type() === "error") consoleErrors.push(m.text()); });
   const errors = pageErrors;
   page.on("pageerror", (e) => errors.push(e.message));
-  if (process.env.CDN_DIR) {
-    await page.setRequestInterception(true);
-    page.on("request", (req) => {
-      const url = new URL(req.url());
-      if (url.origin === BASE || url.hostname === "127.0.0.1") return req.continue();
-      const m = url.hostname === "cdnjs.cloudflare.com" && url.pathname.match(/^\/ajax\/libs\/([^/]+)\/[^/]+\/(.+)$/);
-      const file = m && join(process.env.CDN_DIR, m[1], m[2]);
-      if (file && existsSync(file)) {
-        return req.respond({ status: 200, contentType: "text/javascript", headers: { "Access-Control-Allow-Origin": "*" }, body: readFileSync(file) });
-      }
-      req.abort();
-    });
-  }
   // Record when every audio chunk starts and when it will finish.
   await page.evaluateOnNewDocument(() => {
     window.__plays = [];
@@ -318,6 +309,7 @@ try {
   if (pageErrors.length) console.error("page errors:", pageErrors.join(" | "));
 } finally {
   await browser.close();
+  if (cdn) cdn.close();
   server.kill("SIGTERM");
   pocket.close();
   rmSync(DATA, { recursive: true, force: true });

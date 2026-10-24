@@ -8,7 +8,8 @@
     "start": "node server.js",
     "dev": "node server.js",
     "test": "node test-progress.mjs",
-    "test:playback": "node test-playback.mjs"
+    "test:playback": "node test-playback.mjs",
+    "test:ui": "node test-ui.mjs"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

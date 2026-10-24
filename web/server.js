@@ -505,6 +505,78 @@ app.post("/api/books/:id/progress", requireAuth, wrap(async (req, res) => {
   res.json({ ok: true, updated_at: now });
 }));
 
+// ----- Bookmarks -----
+// Per reader, like progress: anyone who can open the book keeps their own.
+
+const BOOKMARK_NOTE_MAX = 500;
+const BOOKMARKS_PER_BOOK_MAX = 500;
+
+app.get("/api/books/:id/bookmarks", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
+  if (!(await readableBook(id, req.session.userId))) return res.status(404).json({ error: "Not found" });
+  const bookmarks = await query(
+    "SELECT id, page, char_offset, note, created_at FROM bookmarks WHERE user_id = ? AND book_id = ? ORDER BY page, char_offset, id",
+    [req.session.userId, id]
+  );
+  res.json({ bookmarks });
+}));
+
+app.post("/api/books/:id/bookmarks", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
+  if (!(await readableBook(id, req.session.userId))) return res.status(404).json({ error: "Not found" });
+  const { page, char_offset, note } = req.body || {};
+  const p = Number(page);
+  const off = Number(char_offset || 0);
+  if (!Number.isInteger(p) || p < 1) return res.status(400).json({ error: "page must be a positive integer" });
+  if (!Number.isInteger(off) || off < 0) return res.status(400).json({ error: "char_offset must be a non-negative integer" });
+  if (note != null && typeof note !== "string") return res.status(400).json({ error: "note must be text" });
+  const text = note ? note.trim().slice(0, BOOKMARK_NOTE_MAX) : null;
+  const count = await queryOne(
+    "SELECT COUNT(*) AS n FROM bookmarks WHERE user_id = ? AND book_id = ?",
+    [req.session.userId, id]
+  );
+  if (Number(count.n) >= BOOKMARKS_PER_BOOK_MAX) return res.status(400).json({ error: "Too many bookmarks in this book" });
+  const bookmark = await queryOne(
+    `INSERT INTO bookmarks (user_id, book_id, page, char_offset, note, created_at)
+     VALUES (?, ?, ?, ?, ?, ?)
+     RETURNING id, page, char_offset, note, created_at`,
+    [req.session.userId, id, p, off, text || null, Date.now()]
+  );
+  res.status(201).json({ bookmark });
+}));
+
+app.patch("/api/books/:id/bookmarks/:bookmarkId", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
+  const bid = Number(req.params.bookmarkId);
+  if (!Number.isInteger(bid) || bid < 1) return res.status(400).json({ error: "Invalid bookmark id" });
+  const { note } = req.body || {};
+  if (note != null && typeof note !== "string") return res.status(400).json({ error: "note must be text" });
+  const text = note ? note.trim().slice(0, BOOKMARK_NOTE_MAX) : "";
+  const bookmark = await queryOne(
+    `UPDATE bookmarks SET note = ? WHERE id = ? AND book_id = ? AND user_id = ?
+     RETURNING id, page, char_offset, note, created_at`,
+    [text || null, bid, id, req.session.userId]
+  );
+  if (!bookmark) return res.status(404).json({ error: "Not found" });
+  res.json({ bookmark });
+}));
+
+app.delete("/api/books/:id/bookmarks/:bookmarkId", requireAuth, wrap(async (req, res) => {
+  const id = bookId(req, res);
+  if (id === null) return;
+  const bid = Number(req.params.bookmarkId);
+  if (!Number.isInteger(bid) || bid < 1) return res.status(400).json({ error: "Invalid bookmark id" });
+  const gone = await query(
+    "DELETE FROM bookmarks WHERE id = ? AND book_id = ? AND user_id = ? RETURNING id",
+    [bid, id, req.session.userId]
+  );
+  if (gone.length === 0) return res.status(404).json({ error: "Not found" });
+  res.json({ ok: true });
+}));
+
 // ----- ElevenLabs TTS proxy -----
 //
 // Body: { text, voice_id?, model_id? }

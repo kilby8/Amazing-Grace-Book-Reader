@@ -9,7 +9,8 @@
 //   2. Library shows the user's saved books; clicking one opens it
 //   3. Drop / file-picker on the library screen uploads + opens the new
 //      book in the reader in one motion
-//   4. "Back to library" returns to the grid; "Sign out" clears session
+//   4. "Library" returns to the grid and keeps the book playing (mini
+//      player); opening another book replaces it; "Sign out" clears all
 "use strict";
 
 // pdf.js ships as an ES module from the CDN we pinned in index.html.
@@ -39,11 +40,10 @@ const els = {
 
   // Library screen
   libraryGreeting: $("libraryGreeting"),
+  libraryEyebrow: $("libraryEyebrow"),
   uploadPickBtn: $("uploadPickBtn"),
   filePicker: $("filePicker"),
   drop: $("drop"),
-  pickFile: $("pickFile"),  // legacy - library uses filePicker; reader uses this; both share #drop
-  file: $("file"),           // reader-only hidden file input
   bookGrid: $("bookGrid"),
   libraryEmpty: $("libraryEmpty"),
   backToLibrary: $("backToLibrary"),
@@ -89,6 +89,49 @@ const els = {
   pageCount: $("pageCount"),
   pagePrint: $("pagePrint"),
   textOut: $("textOut"),
+
+  // Redesign: library extras, player extras, mini player, dialogs
+  accountName: $("accountName"),
+  themeToggle: $("themeToggle"),
+  brandHome: $("brandHome"),
+  tabMine: $("tabMine"),
+  librarySearch: $("librarySearch"),
+  librarySort: $("librarySort"),
+  librarySearchEmpty: $("librarySearchEmpty"),
+  continueCard: $("continueCard"),
+  continueCover: $("continueCover"),
+  continueTitle: $("continueTitle"),
+  continueMeta: $("continueMeta"),
+  continueBar: $("continueBar"),
+  continueBtn: $("continueBtn"),
+  dropOverlay: $("dropOverlay"),
+  playerCover: $("playerCover"),
+  playerBookTitle: $("playerBookTitle"),
+  pageUnit: $("pageUnit"),
+  timeLeft: $("timeLeft"),
+  bookBar: $("bookBar"),
+  speedChip: $("speedChip"),
+  sleepChipLabel: $("sleepChipLabel"),
+  bookmarkBtn: $("bookmarkBtn"),
+  voiceBtn: $("voiceBtn"),
+  voiceBtnLabel: $("voiceBtnLabel"),
+  voiceDialog: $("voiceDialog"),
+  readAlong: $("readAlong"),
+  chaptersPanel: $("chaptersPanel"),
+  chaptersList: $("chaptersList"),
+  chaptersTabLabel: $("chaptersTabLabel"),
+  bookmarksPanel: $("bookmarksPanel"),
+  bookmarksList: $("bookmarksList"),
+  bookmarksEmpty: $("bookmarksEmpty"),
+  bookmarkCount: $("bookmarkCount"),
+  miniPlayer: $("miniPlayer"),
+  miniOpen: $("miniOpen"),
+  miniCover: $("miniCover"),
+  miniTitle: $("miniTitle"),
+  miniSub: $("miniSub"),
+  miniToggle: $("miniToggle"),
+  miniToggleIcon: $("miniToggleIcon"),
+  miniBar: $("miniBar"),
 };
 
 // ----- state -----
@@ -139,6 +182,10 @@ const state = {
   lastCharOffset: 0,
   resumeAt: null,
   progressReady: false,
+  // Redesign
+  currentBook: null,             // the library row of the loaded book (for covers, mini player)
+  bookmarks: [],                 // [{id,page,char_offset,note,created_at}] for the loaded book
+  autoPlayOnOpen: false,         // "Resume" on the library: start playing once loaded
 };
 
 // ----- API helpers -----
@@ -158,9 +205,19 @@ async function api(path, opts = {}) {
   return body;
 }
 
+// #status is a toast: it shows each message for a few seconds (errors
+// longer) and stays readable as text for tests and screen readers.
+let toastTimer = null;
+// kind "quiet" updates the text without popping the toast (the player
+// already shows what is playing).
 function setStatus(msg, kind = "") {
+  const quiet = kind === "quiet";
   els.status.textContent = msg;
-  els.status.dataset.state = kind || "idle";
+  els.status.dataset.state = quiet ? "busy" : kind || "idle";
+  clearTimeout(toastTimer);
+  els.status.classList.toggle("toast-show", Boolean(msg) && !quiet);
+  const ms = kind === "err" ? 8000 : kind === "busy" ? 2500 : 3500;
+  toastTimer = setTimeout(() => els.status.classList.remove("toast-show"), ms);
 }
 
 // ----- Screen routing -----
@@ -175,34 +232,45 @@ function showScreen(name) {
   if (name === "public" && els.publicScreen) els.publicScreen.hidden = false;
   if (name === "reader" && els.readerScreen) els.readerScreen.hidden = false;
   els.logoutBtn.hidden = !(state.user && (name === "library" || name === "public" || name === "reader"));
+  els.accountName.hidden = els.logoutBtn.hidden;
+  els.accountName.textContent = state.user ? state.user.username : "";
+  syncMiniPlayer();
+  window.scrollTo(0, 0);
 }
 
-function setNowReadingTitle(bookTitle) {
-  els.nrTitle.textContent = bookTitle || "";
-  els.nowReading.hidden = !bookTitle;
+// The player shows the book's title; the line under it names the EPUB
+// chapter when there is one.
+function setNowReadingTitle(title) {
+  const book = state.bookTitle || title || "";
+  els.playerBookTitle.textContent = book;
+  els.nrTitle.textContent = title && title !== book ? title : "";
+  if (state.currentBook || book) renderPlayerCover();
 }
 
+// Play and Pause share one spot: whichever applies is shown.
 function syncPlayButton() {
+  const playing = state.isPlaying && !state.isPaused;
   if (els.playLabel) els.playLabel.textContent = state.isPaused ? "Resume" : "Play";
-  if (els.playIcon) {
-    els.playIcon.innerHTML = '<path d="M8 5v14l11-7L8 5z"/>';
-  }
+  els.play.setAttribute("aria-label", state.isPaused ? "Resume" : "Play");
+  els.play.hidden = playing;
+  els.pause.hidden = !playing;
+  syncMiniPlayer();
 }
 
 // ----- Init: check session and route -----
 async function init() {
-  setStatus("Checking session…", "busy");
+  setStatus("Checking session…", "quiet");
   try {
     const me = await api("/api/me");
     if (me.user) {
       state.user = me.user;
       await loadLibrary();
       showScreen("library");
-      setStatus(`Signed in as ${me.user.username}`);
+      setStatus(`Signed in as ${me.user.username}`, "quiet");
     } else {
       state.user = null;
       showScreen("auth");
-      setStatus("Sign in to start");
+      setStatus("Sign in to start", "quiet");
     }
   } catch (e) {
     setStatus(`Could not reach server: ${e.message}`, "err");
@@ -266,9 +334,9 @@ els.logoutBtn.addEventListener("click", async () => {
   try {
     await api("/api/auth/logout", { method: "POST" });
   } catch (_) { /* best-effort */ }
+  await unloadBook();
   state.user = null;
   state.books = [];
-  state.currentBookId = null;
   showScreen("auth");
   setStatus("Signed out");
   els.authUsername.value = "";
@@ -292,44 +360,42 @@ function renderLibrary() {
   els.libraryEmpty.hidden = state.books.length > 0;
   // Greeting always reflects current book count (including empty)
   if (state.user) {
-    if (state.books.length === 0) {
-      els.libraryGreeting.textContent = `Welcome, ${state.user.username}. Your library is empty.`;
-    } else if (state.books.length === 1) {
-      els.libraryGreeting.textContent = `Welcome back, ${state.user.username}. 1 book in your library.`;
-    } else {
-      els.libraryGreeting.textContent = `Welcome back, ${state.user.username}. ${state.books.length} books in your library.`;
-    }
+    const h = new Date().getHours();
+    const part = h < 5 ? "Good evening" : h < 12 ? "Good morning" : h < 18 ? "Good afternoon" : "Good evening";
+    els.libraryGreeting.textContent = `${part}, ${state.user.username}`;
+    const n = state.books.length;
+    els.libraryEyebrow.textContent = n === 0 ? "Library" : `${n} book${n === 1 ? "" : "s"} on your shelf`;
   }
+  renderContinueCard();
+  els.drop.classList.toggle("drop-big", state.books.length === 0);
+  const shown = filteredSortedBooks();
+  els.librarySearchEmpty.hidden = !(state.books.length && shown.length === 0);
   if (state.books.length === 0) return;
-  for (const b of state.books) {
+  for (const b of shown) {
     const li = document.createElement("li");
-    li.className = "book-card";
+    li.className = "book-card" + (b.id === state.currentBookId ? " book-card-playing" : "");
     li.dataset.id = String(b.id);
     const isPublic = b.visibility === "public";
-    const kindLabel = b.kind.toUpperCase();
-    const sizeKB = (b.size / 1024).toFixed(0);
-    const dateStr = new Date(b.added_at).toLocaleDateString();
-    const unit = b.kind === "epub" ? "Chapter" : "Page";
-    const progressStr = b.progress_page
-      ? ` &middot; ${unit} ${b.progress_page}${b.progress_total_pages ? ` of ${b.progress_total_pages}` : ""}`
-      : "";
+    const pct = bookPercent(b);
     li.innerHTML = `
       <button class="book-card-open" data-id="${b.id}" aria-label="Open ${escapeHtml(b.title)}">
-        <div class="book-card-mark" aria-hidden="true">${escapeHtml(kindLabel)}</div>
+        ${coverHtml(b)}
         <div class="book-card-body">
           <h3 class="book-card-title">${escapeHtml(b.title)}</h3>
           ${b.author ? `<p class="book-card-author">${escapeHtml(b.author)}</p>` : ""}
-          <p class="book-card-meta">${sizeKB} KB &middot; ${escapeHtml(dateStr)}${progressStr}</p>
+          <p class="book-card-meta">${bookMetaHtml(b)}</p>
+          ${pct != null ? `<div class="progress" aria-hidden="true"><span style="width:${pct}%"></span></div>` : ""}
         </div>
       </button>
-      <button class="book-card-share" data-id="${b.id}" aria-pressed="${isPublic}" aria-label="${isPublic ? "Make private" : "Share publicly"}" title="${isPublic ? "Public — anyone signed in can read it" : "Private — only you can read it"}">
-        <svg class="book-card-share-icon-private" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        <svg class="book-card-share-icon-public" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 9.9-1"/></svg>
-        <span class="book-card-share-label">${isPublic ? "Public" : "Private"}</span>
-      </button>
-      <button class="book-card-del" data-id="${b.id}" aria-label="Delete ${escapeHtml(b.title)}" title="Remove from library">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
-      </button>
+      <div class="book-card-actions">
+        <button class="book-card-share" data-id="${b.id}" aria-pressed="${isPublic}" aria-label="${isPublic ? "Make private" : "Share in the public library"}" title="${isPublic ? "Public: anyone signed in can listen. Tap to make private." : "Private: only you. Tap to share it in the public library."}">
+          <svg width="14" height="14" aria-hidden="true"><use href="#${isPublic ? "i-globe" : "i-lock"}"/></svg>
+          <span class="book-card-share-label">Public</span>
+        </button>
+        <button class="book-card-del" data-id="${b.id}" aria-label="Remove ${escapeHtml(b.title)}" title="Remove from library">
+          <svg width="14" height="14" aria-hidden="true"><use href="#i-trash"/></svg>
+        </button>
+      </div>
     `;
     els.bookGrid.appendChild(li);
   }
@@ -362,7 +428,9 @@ function renderLibrary() {
       const ok = confirm(`Remove "${book.title}" from your library? The file will be deleted.`);
       if (!ok) return;
       try {
+        if (id === state.currentBookId) await unloadBook();
         await api(`/api/books/${id}`, { method: "DELETE" });
+        forgetThumb(id);
         state.books = state.books.filter((b) => b.id !== id);
         renderLibrary();
         setStatus(`Removed "${book.title}"`, "ok");
@@ -487,19 +555,29 @@ async function openBookFromLibrary(id) {
     setStatus("Book not found in library", "err");
     return;
   }
-  setStatus(`Loading "${book.title}"…`, "busy");
+  if (state.currentBookId === id && state.pdfDoc) {
+    showScreen("reader");
+    maybeAutoPlay();
+    return;
+  }
+  await unloadBook();
+  setStatus(`Opening "${book.title}"…`, "busy");
   try {
+    state.currentBookId = id;
+    state.currentBook = book;
+    state.progressReady = false;
+    showScreen("reader");
+    prepareReaderFor(book);
     const blob = await fetchBookBlob(id);
     const file = new File([blob], `${book.title}.${book.kind}`, { type: blob.type });
     // Update last_opened_at locally so the library shows it as recent
     book.last_opened_at = Date.now();
-    state.currentBookId = id;
-    state.progressReady = false;
-    showScreen("reader");
     applyEngineVisibility();
     syncPlayButton();
     await loadDocument(file);
     await restoreProgress(id);
+    loadBookmarks(id);
+    maybeAutoPlay();
   } catch (e) {
     setStatus(`Could not open book: ${e.message}`, "err");
   }
@@ -532,16 +610,13 @@ function renderPublicLibrary() {
     const li = document.createElement("li");
     li.className = "book-card";
     li.dataset.id = String(b.id);
-    const kindLabel = b.kind.toUpperCase();
-    const sizeKB = (b.size / 1024).toFixed(0);
-    const sharedStr = b.shared_at ? new Date(b.shared_at).toLocaleDateString() : "";
     li.innerHTML = `
       <button class="book-card-open" data-id="${b.id}" aria-label="Open ${escapeHtml(b.title)}">
-        <div class="book-card-mark" aria-hidden="true">${escapeHtml(kindLabel)}</div>
+        ${coverHtml(b)}
         <div class="book-card-body">
           <h3 class="book-card-title">${escapeHtml(b.title)}</h3>
           ${b.author ? `<p class="book-card-author">${escapeHtml(b.author)}</p>` : ""}
-          <p class="book-card-meta">${sizeKB} KB &middot; shared by <span class="book-card-sharedby">@${escapeHtml(b.shared_by || "")}</span>${sharedStr ? " &middot; " + escapeHtml(sharedStr) : ""}</p>
+          <p class="book-card-meta">Shared by <span class="book-card-sharedby">${escapeHtml(b.shared_by || "")}</span></p>
         </div>
       </button>
     `;
@@ -561,17 +636,25 @@ async function openBookFromPublicLibrary(id) {
     setStatus("Book not found in public library", "err");
     return;
   }
-  setStatus(`Loading "${book.title}"…`, "busy");
+  if (state.currentBookId === id && state.pdfDoc) {
+    showScreen("reader");
+    return;
+  }
+  await unloadBook();
+  setStatus(`Opening "${book.title}"…`, "busy");
   try {
-    const blob = await fetchBookBlob(id);
-    const file = new File([blob], `${book.title}.${book.kind}`, { type: blob.type });
     state.currentBookId = id;
+    state.currentBook = book;
     state.progressReady = false;
     showScreen("reader");
+    prepareReaderFor(book);
+    const blob = await fetchBookBlob(id);
+    const file = new File([blob], `${book.title}.${book.kind}`, { type: blob.type });
     applyEngineVisibility();
     syncPlayButton();
     await loadDocument(file);
     await restoreProgress(id);
+    loadBookmarks(id);
   } catch (e) {
     setStatus(`Could not open book: ${e.message}`, "err");
   }
@@ -579,36 +662,51 @@ async function openBookFromPublicLibrary(id) {
 
 if (els.browsePublicBtn) {
   els.browsePublicBtn.addEventListener("click", async () => {
-    setStatus("Loading public library…", "busy");
     showScreen("public");
     await loadPublicLibrary();
-    setStatus("Browsing public library");
   });
 }
 if (els.backFromPublic) {
   els.backFromPublic.addEventListener("click", async () => {
     showScreen("library");
-    setStatus("Back to library");
   });
 }
 
+// Leaving the player keeps the book loaded (and playing); the mini player
+// brings it back.
 els.backToLibrary.addEventListener("click", async () => {
-  // Stop playback before leaving the reader (stopInternal saves progress)
-  await stopInternal();
+  saveProgressNow();
+  showScreen("library");
+  await loadLibrary();
+});
+
+// Stop and forget the loaded book (before opening another, deleting it,
+// or signing out). stopInternal saves the position first.
+async function unloadBook() {
+  if (!state.pdfDoc && !state.currentBookId) return;
+  if (state.isPlaying || state.isPaused) await stopInternal();
+  else saveProgressNow();
+  clearSleepTimer();
   state.progressReady = false;
   state.currentBookId = null;
+  state.currentBook = null;
   state.pdfDoc = null;
   state.pagesText = [];
   state.bookTitle = "";
   state.chapterTitles = null;
   state.pagePrintNumbers = null;
+  state.bookmarks = [];
+  state.resumeAt = null;
   setNowReadingTitle("");
   els.textOut.textContent = "";
+  els.play.disabled = els.prev.disabled = els.next.disabled = els.pageJump.disabled = true;
+  els.bookmarkBtn.disabled = true;
   setCurrentPage(1);
-  showScreen("library");
-  await loadLibrary();
-  setStatus("Back to library");
-});
+  renderReadAlong(true);
+  renderChapters();
+  renderBookmarks();
+  syncMiniPlayer();
+}
 
 // ----- Document loading (PDF or EPUB) - called by both library and direct drop -----
 async function loadDocument(file) {
@@ -713,12 +811,10 @@ async function loadPdfFile(file) {
     els.prev.disabled = false;
     els.next.disabled = false;
     els.play.disabled = false;
-    const totalChars = state.pagesText.reduce((a, t) => a + t.length, 0);
-    setStatus(
-      `Loaded ${doc.numPages} page${doc.numPages === 1 ? "" : "s"} \u00b7 ${totalChars.toLocaleString()} chars`,
-      "ok"
-    );
+    setStatus(`Ready to play \u00b7 ${doc.numPages} page${doc.numPages === 1 ? "" : "s"}`, "ok");
     els.textOut.textContent = state.pagesText.join("\n\n--- page break ---\n\n");
+    bookLoaded();
+    savePdfThumb(doc, state.currentBookId);
   } catch (e) {
     console.error(e);
     setStatus(`Failed to read PDF: ${e.message}`, "err");
@@ -857,16 +953,14 @@ async function loadEpubFile(file) {
     els.prev.disabled = false;
     els.next.disabled = false;
     els.play.disabled = false;
-    const totalChars = pages.reduce((a, t) => a + t.length, 0);
-    setStatus(
-      `Loaded ${pages.length} chapter${pages.length === 1 ? "" : "s"} \u00b7 ${totalChars.toLocaleString()} chars`,
-      "ok"
-    );
+    setStatus(`Ready to play \u00b7 ${pages.length} chapter${pages.length === 1 ? "" : "s"}`, "ok");
     els.textOut.textContent = pages.map((p, i) => {
       const pn = pagePrintNumbers[i];
       const tag = pn ? `ch. ${i + 1} / p. ${pn}` : `ch. ${i + 1}`;
       return `--- ${tag} ---\n${p}`;
     }).join("\n\n");
+    bookLoaded();
+    saveEpubThumb(zip, opfDoc, opfDir, state.currentBookId);
   } catch (e) {
     console.error(e);
     setStatus(`Failed to read EPUB: ${e.message}`, "err");
@@ -1046,6 +1140,7 @@ function setCurrentPage(n) {
   if (ct) setNowReadingTitle(ct);
   else if (state.bookTitle) setNowReadingTitle(state.bookTitle);
   scheduleWarmPocket();
+  onPageChanged();
 }
 
 // ----- engine + speed -----
@@ -1106,7 +1201,7 @@ els.engine.addEventListener("change", () => {
 });
 
 els.speed.addEventListener("input", () => {
-  els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}\u00d7`;
+  syncSpeedChip();
   if (state.isPlaying) {
     if (els.engine.value === "browser") {
       const restartFromPage = state.currentPage;
@@ -1155,7 +1250,7 @@ els.refreshVoices.addEventListener("click", refreshBrowserVoices);
 els.pocketHealth.addEventListener("click", async () => {
   const base = els.pocketUrl.value.trim().replace(/\/+$/, "");
   if (!base) {
-    setStatus("Set a Pocket TTS URL first.", "err");
+    setStatus("Set the natural voice server under Voice, Advanced.", "err");
     return;
   }
   setStatus(`Checking ${base}/health \u2026`, "busy");
@@ -1163,9 +1258,9 @@ els.pocketHealth.addEventListener("click", async () => {
     const r = await fetch(`${base}/health`, { method: "GET" });
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const j = await r.json().catch(() => ({}));
-    setStatus(`Pocket TTS OK: ${j.status ?? "healthy"}`, "ok");
+    setStatus(`The natural voice server is working (${j.status ?? "healthy"})`, "ok");
   } catch (e) {
-    setStatus(`Pocket TTS unreachable: ${e.message}`, "err");
+    setStatus(`Can't reach the natural voice server: ${e.message}`, "err");
   }
 });
 
@@ -1348,7 +1443,7 @@ function playBrowserFromCurrent() {
     setStatus(`Page ${state.currentPage} has no extractable text.`, "err");
     return;
   }
-  setStatus(`Reading page ${state.currentPage} (browser TTS) \u2026`, "busy");
+  setStatus(`Reading page ${state.currentPage} (browser TTS) \u2026`, "quiet");
   state.isPlaying = true;
   state.isPaused = false;
   els.play.disabled = true;
@@ -1631,7 +1726,7 @@ async function runPocketProducer(s) {
       if (!alive()) return;
     } catch (e) {
       if (!alive()) return;
-      setStatus(`Pocket TTS request failed: ${e.message}. Try the Browser engine instead.`, "err");
+      setStatus(`The natural voice didn't answer (${e.message}). Try again, or choose "This device's voice" under Voice.`, "err");
       stopInternal();
       return;
     }
@@ -1706,7 +1801,7 @@ function onPocketEnded(s, source) {
   } else {
     s.playIdx = idx;
     s.waiting = true;
-    setStatus(`Pocket TTS: loading page ${state.currentPage} …`, "busy");
+    setStatus("Loading the voice …", "busy");
   }
 }
 
@@ -1730,7 +1825,7 @@ function becameCurrent(s) {
   state.pocketIndex = chunkIndexForOffset(state.pocketQueue, item.offset);
   state.lastCharOffset = item.offset;
   scheduleProgressSave();
-  setStatus(`Reading page ${state.currentPage} via Pocket TTS …`, "busy");
+  setStatus(`Reading page ${state.currentPage} …`, "quiet");
   updateMediaSession();
   // Let go of buffers far behind; "back 30 s" only needs the last few.
   const drop = s.cur.idx - POCKET_KEEP_BEHIND;
@@ -1799,7 +1894,7 @@ function pocketSeekBy(seconds) {
 function playPocketFromCurrent() {
   const base = els.pocketUrl.value.trim().replace(/\/+$/, "");
   if (!base) {
-    setStatus("Set a Pocket TTS URL first.", "err");
+    setStatus("Set the natural voice server under Voice, Advanced.", "err");
     return;
   }
   if (!(state.pagesText[state.currentPage - 1] || "").trim()) {
@@ -1816,7 +1911,7 @@ function playPocketFromCurrent() {
   state.resumeAt = null;
   const offset = r && r.page === state.currentPage ? r.offset : 0;
   state.pocketBase = base;
-  setStatus(`Reading page ${state.currentPage} via Pocket TTS …`, "busy");
+  setStatus(`Reading page ${state.currentPage} …`, "quiet");
   state.isPlaying = true;
   state.isPaused = false;
   state.audioCtxSuspended = false;
@@ -1851,7 +1946,7 @@ function playElevenLabsFromCurrent() {
     setStatus(`Page ${state.currentPage} has no extractable text.`, "err");
     return;
   }
-  setStatus(`Reading page ${state.currentPage} via ElevenLabs \u2026`, "busy");
+  setStatus(`Reading page ${state.currentPage} \u2026`, "quiet");
   state.isPlaying = true;
   state.isPaused = false;
   els.play.disabled = true;
@@ -2031,8 +2126,7 @@ function refreshAudioPosUI() {
     if (queue.length === 0 || totalPages === 0) {
       els.audioPosLabel.textContent = "—";
     } else {
-      els.audioPosLabel.textContent =
-        `Chunk ${Math.min(idx + 1, queue.length)}/${queue.length} \u00b7 Page ${state.currentPage}/${totalPages}`;
+      els.audioPosLabel.textContent = positionLabel();
     }
   }
 }
@@ -2056,10 +2150,7 @@ function startPosTicker() {
         els.audioPos.value = String(Math.min(max, engine === "pocket" ? pocketSliderValue(frac) : idx + frac));
       }
       const totalPages = state.pdfDoc ? state.pdfDoc.numPages : 0;
-      if (els.audioPosLabel) {
-        els.audioPosLabel.textContent =
-          `Chunk ${Math.min(idx + 1, queue.length)}/${queue.length} \u00b7 Page ${state.currentPage}/${totalPages}`;
-      }
+      if (els.audioPosLabel && totalPages) els.audioPosLabel.textContent = positionLabel();
     } else if (engine !== "browser") {
       // paused / stopped but a queue exists — keep the label fresh even if
       // the value doesn't move
@@ -2247,6 +2338,7 @@ function clearSleepTimer(message) {
   sleepTimer.timer = sleepTimer.ticker = null;
   els.sleepTimer.value = "off";
   els.sleepLabel.hidden = true;
+  syncSleepChip();
   if (message) setStatus(message, "ok");
 }
 function showSleepRemaining() {
@@ -2261,9 +2353,10 @@ els.sleepTimer.addEventListener("change", () => {
   clearTimeout(sleepTimer.timer);
   clearInterval(sleepTimer.ticker);
   sleepTimer.mode = v === "off" ? "off" : v === "page" ? "page" : "min";
+  syncSleepChip();
   if (sleepTimer.mode === "off") { clearSleepTimer(); return; }
   if (sleepTimer.mode === "page") {
-    els.sleepLabel.textContent = "Stops when this page or chapter ends";
+    els.sleepLabel.textContent = "Stops at the end of this page";
     els.sleepLabel.hidden = false;
     return;
   }
@@ -2335,9 +2428,686 @@ function setKeepAlive(on) {
   } catch (_) {}
 }
 
+
+// =========================================================================
+// Redesign: covers, library tools, player panels, bookmarks, mini player,
+// theme, voice sheet, keyboard, drag and drop, install.
+// =========================================================================
+
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch (_) { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch (_) { /* full or blocked */ } },
+  del(k) { try { localStorage.removeItem(k); } catch (_) {} },
+};
+const unitFor = (kind) => (kind === "epub" ? "Chapter" : "Page");
+const loadedUnit = () => (state.pdfDoc && state.pdfDoc._kind === "epub" ? "Chapter" : "Page");
+
+// ----- covers -----
+// A book's own cover (EPUB cover image, or a PDF's first page when it
+// looks like a cover) is saved on this device once the book is opened;
+// until then the cover is drawn from the title.
+const COVER_HUES = [28, 48, 145, 165, 200, 228, 262, 300, 340, 12, 95, 185];
+function hueFor(text) {
+  let h = 0;
+  for (const c of String(text || "")) h = (h * 31 + c.codePointAt(0)) >>> 0;
+  return COVER_HUES[h % COVER_HUES.length];
+}
+const thumbKey = (id) => `agr.thumb.${id}`;
+const getThumb = (id) => (id ? store.get(thumbKey(id)) : null);
+const forgetThumb = (id) => store.del(thumbKey(id));
+function coverHtml(b) {
+  const thumb = b && getThumb(b.id);
+  if (thumb) return `<div class="cover cover-img"><img src="${thumb}" alt="" loading="lazy" /></div>`;
+  const title = (b && b.title) || state.bookTitle || "";
+  return `<div class="cover" style="--h:${hueFor(title)}" aria-hidden="true">
+    <span class="cover-kind">${escapeHtml(((b && b.kind) || "").toUpperCase())}</span>
+    <span class="cover-title">${escapeHtml(title)}</span>
+    <span class="cover-author">${escapeHtml((b && b.author) || "")}</span>
+  </div>`;
+}
+function renderPlayerCover() {
+  const b = state.currentBook || { id: state.currentBookId, title: state.bookTitle, kind: state.pdfDoc && state.pdfDoc._kind === "epub" ? "epub" : "pdf" };
+  els.playerCover.innerHTML = coverHtml(b);
+}
+function canvasToThumb(canvas) {
+  try { return canvas.toDataURL("image/jpeg", 0.72); } catch (_) { return null; }
+}
+function saveThumb(id, dataUrl) {
+  if (!id || !dataUrl) return;
+  store.set(thumbKey(id), dataUrl);
+  if (id === state.currentBookId) renderPlayerCover();
+  syncMiniPlayer(true);
+}
+async function savePdfThumb(doc, id) {
+  if (!id || getThumb(id)) return;
+  // A text-heavy first page is a title page or chapter one, not a cover.
+  if ((state.pagesText[0] || "").length > 400) return;
+  try {
+    const page = await doc.getPage(1);
+    const vp0 = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: 320 / vp0.width });
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.round(vp.width);
+    canvas.height = Math.round(vp.height);
+    await page.render({ canvasContext: canvas.getContext("2d"), viewport: vp }).promise;
+    saveThumb(id, canvasToThumb(canvas));
+  } catch (_) { /* keep the drawn cover */ }
+}
+async function saveEpubThumb(zip, opfDoc, opfDir, id) {
+  if (!id || getThumb(id)) return;
+  try {
+    let item = opfDoc.querySelector('manifest > item[properties~="cover-image"]');
+    if (!item) {
+      const meta = opfDoc.querySelector('metadata > meta[name="cover"]');
+      const cid = meta && meta.getAttribute("content");
+      if (cid) item = Array.from(opfDoc.querySelectorAll("manifest > item")).find((el) => el.getAttribute("id") === cid);
+    }
+    const href = item && item.getAttribute("href");
+    const entry = href && zip.file(opfDir + decodeURIComponent(href));
+    if (!entry) return;
+    const blob = new Blob([await entry.async("uint8array")], { type: item.getAttribute("media-type") || "image/jpeg" });
+    const bmp = await createImageBitmap(blob);
+    const canvas = document.createElement("canvas");
+    canvas.width = 320;
+    canvas.height = Math.round((320 * bmp.height) / bmp.width);
+    canvas.getContext("2d").drawImage(bmp, 0, 0, canvas.width, canvas.height);
+    saveThumb(id, canvasToThumb(canvas));
+  } catch (_) { /* keep the drawn cover */ }
+}
+
+// ----- library: progress, search, sort, continue listening -----
+function bookPercent(b) {
+  if (b.id === state.currentBookId && state.pdfDoc) return Math.round(loadedFraction() * 100);
+  if (!b.progress_page || !b.progress_total_pages) return null;
+  return Math.max(1, Math.round(((b.progress_page - 1) / b.progress_total_pages) * 100));
+}
+function bookMetaHtml(b) {
+  const unit = unitFor(b.kind);
+  const page = b.id === state.currentBookId && state.pdfDoc ? state.currentPage : b.progress_page;
+  const total = b.id === state.currentBookId && state.pdfDoc ? state.pdfDoc.numPages : b.progress_total_pages;
+  if (!page) return `${b.kind.toUpperCase()} &middot; Not started`;
+  const pct = bookPercent(b);
+  return `${unit} ${page}${total ? ` of ${total}` : ""}${pct != null ? ` &middot; ${pct}%` : ""}`;
+}
+function filteredSortedBooks() {
+  const q = (els.librarySearch.value || "").trim().toLowerCase();
+  const list = state.books.filter((b) => !q || `${b.title} ${b.author || ""}`.toLowerCase().includes(q));
+  const by = els.librarySort.value;
+  const recent = (b) => b.last_opened_at || 0;
+  if (by === "title") list.sort((a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
+  else if (by === "added") list.sort((a, b) => (b.added_at || 0) - (a.added_at || 0));
+  else list.sort((a, b) => recent(b) - recent(a) || (b.added_at || 0) - (a.added_at || 0));
+  return list;
+}
+els.librarySearch.addEventListener("input", () => renderLibrary());
+els.librarySort.value = store.get("agr.sort") || "recent";
+els.librarySort.addEventListener("change", () => { store.set("agr.sort", els.librarySort.value); renderLibrary(); });
+
+function continueBook() {
+  if (state.currentBookId) {
+    const b = state.books.find((x) => x.id === state.currentBookId);
+    if (b) return b;
+  }
+  return state.books
+    .filter((b) => b.last_opened_at || b.progress_page)
+    .sort((a, b) => (b.last_opened_at || 0) - (a.last_opened_at || 0))[0] || null;
+}
+function renderContinueCard() {
+  const b = continueBook();
+  els.continueCard.hidden = !b;
+  if (!b) return;
+  els.continueCover.innerHTML = coverHtml(b);
+  els.continueTitle.textContent = b.title;
+  const pct = bookPercent(b);
+  els.continueMeta.innerHTML = b.progress_page || b.id === state.currentBookId ? bookMetaHtml(b) : "Start from the beginning";
+  els.continueBar.style.width = `${pct || 0}%`;
+  els.continueCard.dataset.id = String(b.id);
+  const playing = b.id === state.currentBookId && state.isPlaying && !state.isPaused;
+  els.continueBtn.querySelector("span").textContent = playing ? "Open player" : b.progress_page ? "Resume" : "Play";
+}
+// Resume = open and play in one tap. Unlock audio inside the tap so the
+// play that follows the download is allowed on phones.
+els.continueBtn.addEventListener("click", () => {
+  const id = Number(els.continueCard.dataset.id);
+  try { getAudioCtx().resume(); } catch (_) {}
+  if (els.engine.value !== "browser") setKeepAlive(true);
+  state.autoPlayOnOpen = true;
+  openBookFromLibrary(id);
+});
+function maybeAutoPlay() {
+  if (!state.autoPlayOnOpen) return;
+  state.autoPlayOnOpen = false;
+  if (state.pdfDoc && !(state.isPlaying && !state.isPaused)) els.play.click();
+}
+
+// ----- player -----
+function prepareReaderFor(book) {
+  state.bookTitle = book.title;
+  els.playerBookTitle.textContent = book.title;
+  els.nrTitle.textContent = "";
+  els.pageUnit.textContent = unitFor(book.kind);
+  els.chaptersTabLabel.textContent = book.kind === "epub" ? "Chapters" : "Pages";
+  els.pageCount.textContent = "…";
+  renderPlayerCover();
+  els.readAlong.innerHTML = `<p class="ra-empty">Opening the book…</p>`;
+  els.chaptersList.innerHTML = "";
+  state.bookmarks = [];
+  renderBookmarks();
+  els.timeLeft.textContent = "";
+  els.audioPosLabel.textContent = "—";
+  els.bookBar.style.width = "0%";
+}
+function bookLoaded() {
+  els.pageUnit.textContent = loadedUnit();
+  els.chaptersTabLabel.textContent = loadedUnit() === "Chapter" ? "Chapters" : "Pages";
+  els.bookmarkBtn.disabled = false;
+  if (state.currentBook) state.bookTitle = state.bookTitle || state.currentBook.title;
+  renderPlayerCover();
+  renderChapters();
+  renderReadAlong(true);
+  els.audioPosLabel.textContent = positionLabel();
+  updateTimes();
+}
+function onPageChanged() {
+  if (!els.readAlong) return;
+  renderReadAlong();
+  markChapter();
+  els.audioPosLabel.textContent = state.pdfDoc ? positionLabel() : "—";
+  updateTimes();
+}
+function positionLabel() {
+  if (!state.pdfDoc) return "—";
+  return `${loadedUnit()} ${state.currentPage} of ${state.pdfDoc.numPages}`;
+}
+
+// Where the voice is now: { page, start, end, pos } in the page's offset
+// model (see chunkStartOffsets), or null when nothing is playing.
+function currentReadPos() {
+  if (!state.pdfDoc || !(state.isPlaying || state.isPaused)) return null;
+  const s = pocketStream;
+  if (els.engine.value === "pocket") {
+    if (!s || !s.cur || !s.items[s.cur.idx]) return null;
+    const item = s.items[s.cur.idx];
+    let frac = 0;
+    if (pocketSource && item.buffer) {
+      const ctx = getAudioCtx();
+      const rate = Number(els.speed.value) || 1;
+      const t0 = pocketSource._startCtxTime ?? ctx.currentTime;
+      frac = Math.min(1, Math.max(0, ((ctx.currentTime - t0) * rate) / Math.max(0.001, item.buffer.duration)));
+    }
+    return { page: item.page, start: item.offset, end: item.offset + item.text.length, pos: item.offset + frac * item.text.length, fine: true };
+  }
+  const queue = els.engine.value === "browser" ? state.browserQueue : state.elevenLabsQueue;
+  const idx = els.engine.value === "browser" ? state.browserIndex : state.elevenLabsIndex;
+  const text = queue[idx] || "";
+  const start = state.lastCharOffset;
+  return { page: state.currentPage, start, end: start + text.length, pos: start, fine: false };
+}
+// Characters per page and before each page, computed once per book.
+let pageLensFor = null, pageLens = [], pageBefore = [], bookChars = 0;
+function bookLengths() {
+  if (pageLensFor !== state.pagesText) {
+    pageLensFor = state.pagesText;
+    pageLens = state.pagesText.map((t) => t.length + 1);
+    pageBefore = [];
+    bookChars = 0;
+    for (const n of pageLens) { pageBefore.push(bookChars); bookChars += n; }
+  }
+  return { lens: pageLens, before: pageBefore, total: bookChars };
+}
+// Fraction of the whole book behind the voice (by characters).
+function loadedFraction() {
+  if (!state.pdfDoc) return 0;
+  const { lens, before: starts, total: sum } = bookLengths();
+  const total = sum || 1;
+  const before = starts[state.currentPage - 1] || 0;
+  const r = currentReadPos();
+  const inPage = r && r.page === state.currentPage ? r.pos : (state.resumeAt && state.resumeAt.page === state.currentPage ? state.resumeAt.offset : state.lastCharOffset);
+  return Math.min(1, (before + Math.min(inPage || 0, lens[state.currentPage - 1] || 0)) / total);
+}
+function charsPerSecond() {
+  const speed = Number(els.speed.value) || 1;
+  if (els.engine.value === "pocket") return (1000 / 51) * speed; // measured on the hosted voice
+  return 14.5 * speed;
+}
+function formatDuration(sec) {
+  const m = Math.max(1, Math.round(sec / 60));
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  return `${h} h ${m % 60} min`;
+}
+function updateTimes() {
+  if (!state.pdfDoc) { els.timeLeft.textContent = ""; return; }
+  const { total } = bookLengths();
+  const frac = loadedFraction();
+  const left = (total * (1 - frac)) / charsPerSecond();
+  els.timeLeft.textContent = total ? `${formatDuration(left)} left in book` : "";
+  els.bookBar.style.width = `${(frac * 100).toFixed(1)}%`;
+}
+
+// ----- read along -----
+let raPage = 0;
+let raNow = null;
+let raUserScrollAt = 0;
+function renderReadAlong(force = false) {
+  if (!state.pdfDoc) {
+    raPage = 0;
+    raNow = null;
+    els.readAlong.innerHTML = `<p class="muted">The text appears here and follows the voice. Tap a sentence to listen from there.</p>`;
+    return;
+  }
+  if (!force && raPage === state.currentPage) return;
+  raPage = state.currentPage;
+  raNow = null;
+  const ct = state.chapterTitles && state.chapterTitles[raPage - 1];
+  const head = `<p class="ra-heading">${escapeHtml(ct || `${loadedUnit()} ${raPage}`)}</p>`;
+  const atoms = pageAtoms(raPage);
+  if (atoms.length === 0) {
+    els.readAlong.innerHTML = head + `<p class="ra-empty">There is no readable text on this ${loadedUnit().toLowerCase()}. It may be a picture or a scanned page.</p>`;
+  } else {
+    els.readAlong.innerHTML = head + "<p>" + atoms.map((a) =>
+      `<span class="ra-s" data-o="${a.offset}" data-e="${a.offset + a.text.length}">${escapeHtml(a.text)}</span>`
+    ).join(" ") + "</p>";
+  }
+  if (raPage < state.pdfDoc.numPages) {
+    els.readAlong.insertAdjacentHTML("beforeend", `<div class="ra-next"><button type="button" class="btn btn-ghost" data-next-page>Next ${loadedUnit().toLowerCase()} &rarr;</button></div>`);
+  }
+  els.readAlong.scrollTop = 0;
+}
+function highlightReadAlong() {
+  const r = currentReadPos();
+  const spans = els.readAlong.querySelectorAll(".ra-s");
+  let now = null;
+  if (r && r.page === raPage) {
+    for (const sp of spans) {
+      const o = Number(sp.dataset.o), e = Number(sp.dataset.e);
+      const isNow = r.fine ? (r.pos >= o && r.pos <= e + 1) : (o < r.end && e > r.start);
+      if (isNow && !now) now = sp;
+      sp.classList.toggle("ra-now", isNow && (r.fine ? sp === now : true));
+      sp.classList.toggle("ra-said", e < (r.fine ? r.pos : r.start));
+    }
+  } else {
+    spans.forEach((sp) => sp.classList.remove("ra-now"));
+  }
+  if (now && now !== raNow) {
+    raNow = now;
+    if (Date.now() - raUserScrollAt > 5000) {
+      const box = els.readAlong;
+      const top = now.offsetTop - box.offsetTop - box.clientHeight / 3;
+      box.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+    }
+  }
+}
+["wheel", "touchmove", "keydown"].forEach((ev) =>
+  els.readAlong.addEventListener(ev, () => { raUserScrollAt = Date.now(); }, { passive: true })
+);
+els.readAlong.addEventListener("click", (e) => {
+  if (e.target.closest("[data-next-page]")) { els.next.click(); return; }
+  const sp = e.target.closest(".ra-s");
+  if (!sp || !state.pdfDoc) return;
+  raUserScrollAt = 0;
+  playFrom(raPage, Number(sp.dataset.o));
+});
+
+// Start playing at (page, offset): read-along taps, chapters, bookmarks.
+function playFrom(page, offset) {
+  if (!state.pdfDoc) return;
+  try { getAudioCtx().resume(); } catch (_) {}
+  if (els.engine.value !== "browser") setKeepAlive(true);
+  stopInternal().then(() => {
+    setCurrentPage(page);
+    state.resumeAt = { page, offset };
+    state.lastCharOffset = offset;
+    playFromCurrent();
+  });
+}
+
+// ----- chapters / pages list -----
+function renderChapters() {
+  els.chaptersList.innerHTML = "";
+  if (!state.pdfDoc) return;
+  const unit = loadedUnit();
+  const frag = document.createDocumentFragment();
+  for (let i = 1; i <= state.pdfDoc.numPages; i++) {
+    const li = document.createElement("li");
+    const name = (state.chapterTitles && state.chapterTitles[i - 1]) ||
+      (state.pagesText[i - 1] || "").replace(/\s+/g, " ").trim().slice(0, 80) || `${unit} ${i} (no text)`;
+    li.innerHTML = `<button type="button" data-page="${i}"><span class="ch-num">${i}</span><span class="ch-name">${escapeHtml(name)}</span></button>`;
+    frag.appendChild(li);
+  }
+  els.chaptersList.appendChild(frag);
+  markChapter();
+}
+function markChapter() {
+  els.chaptersList.querySelectorAll("button").forEach((b) => {
+    const on = Number(b.dataset.page) === state.currentPage;
+    b.classList.toggle("ch-now", on);
+    if (on) b.setAttribute("aria-current", "true"); else b.removeAttribute("aria-current");
+  });
+}
+els.chaptersList.addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-page]");
+  if (!b) return;
+  playFrom(Number(b.dataset.page), 0);
+  showPanel("readAlong");
+});
+
+// ----- bookmarks -----
+async function loadBookmarks(id) {
+  try {
+    const { bookmarks } = await api(`/api/books/${id}/bookmarks`);
+    if (state.currentBookId !== id) return;
+    state.bookmarks = bookmarks || [];
+  } catch (e) {
+    state.bookmarks = [];
+  }
+  renderBookmarks();
+}
+function bookmarkQuote(page, offset) {
+  const atoms = pageAtoms(page);
+  let a = atoms[0];
+  for (const x of atoms) { if (x.offset <= offset) a = x; else break; }
+  return a ? a.text : "";
+}
+function renderBookmarks() {
+  els.bookmarksList.innerHTML = "";
+  const list = state.bookmarks;
+  els.bookmarksEmpty.hidden = list.length > 0;
+  els.bookmarkCount.hidden = list.length === 0;
+  els.bookmarkCount.textContent = String(list.length);
+  const unit = loadedUnit();
+  for (const bm of list) {
+    const li = document.createElement("li");
+    const quote = state.pdfDoc ? bookmarkQuote(bm.page, bm.char_offset) : "";
+    li.innerHTML = `
+      <button type="button" class="bookmark-jump" data-id="${bm.id}">
+        <span class="bookmark-where">${unit} ${bm.page}</span>
+        ${bm.note ? `<span class="bookmark-note">${escapeHtml(bm.note)}</span>` : ""}
+        <span class="bookmark-quote">${escapeHtml(quote)}</span>
+      </button>
+      <button type="button" class="btn-icon-round bookmark-edit" data-id="${bm.id}" aria-label="${bm.note ? "Edit note" : "Add a note"} on ${unit.toLowerCase()} ${bm.page}">
+        <svg width="18" height="18" aria-hidden="true"><use href="#i-note"/></svg>
+      </button>
+      <button type="button" class="btn-icon-round bookmark-del" data-id="${bm.id}" aria-label="Delete bookmark on ${unit.toLowerCase()} ${bm.page}">
+        <svg width="18" height="18" aria-hidden="true"><use href="#i-trash"/></svg>
+      </button>`;
+    els.bookmarksList.appendChild(li);
+  }
+}
+async function addBookmark() {
+  if (!state.pdfDoc || !state.currentBookId) return;
+  const r = currentReadPos();
+  const page = r ? r.page : state.currentPage;
+  let offset = r ? Math.floor(r.fine ? r.pos : r.start) : state.lastCharOffset;
+  // Snap to the start of the sentence so the jump back begins cleanly.
+  for (const a of pageAtoms(page)) { if (a.offset <= offset) offset = Math.max(0, a.offset); }
+  if (state.bookmarks.some((b) => b.page === page && b.char_offset === offset)) {
+    setStatus(`This spot is already bookmarked`, "ok");
+    showPanel("bookmarksPanel");
+    return;
+  }
+  const note = null;
+  try {
+    const { bookmark } = await api(`/api/books/${state.currentBookId}/bookmarks`, {
+      method: "POST",
+      body: JSON.stringify({ page, char_offset: offset, note }),
+    });
+    state.bookmarks = [...state.bookmarks, bookmark].sort((a, b) => a.page - b.page || a.char_offset - b.char_offset);
+    renderBookmarks();
+    setStatus(`Bookmarked ${loadedUnit().toLowerCase()} ${page}`, "ok");
+  } catch (e) {
+    setStatus(`Could not save the bookmark: ${e.message}`, "err");
+  }
+}
+// Inline note editor: Enter or leaving the box saves, Escape cancels.
+function editBookmarkNote(id, li) {
+  const bm = state.bookmarks.find((b) => b.id === id);
+  if (!bm || !li) return;
+  const form = document.createElement("form");
+  form.className = "bookmark-note-form";
+  form.innerHTML = `<input type="text" maxlength="500" placeholder="Add a note" aria-label="Note for this bookmark" />
+    <button type="submit" class="btn btn-primary btn-small">Save</button>`;
+  const input = form.querySelector("input");
+  input.value = bm.note || "";
+  li.replaceChildren(form);
+  input.focus();
+  let done = false;
+  const save = async () => {
+    if (done) return;
+    done = true;
+    const note = input.value.trim();
+    if (note === (bm.note || "")) return renderBookmarks();
+    try {
+      const { bookmark } = await api(`/api/books/${state.currentBookId}/bookmarks/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ note }),
+      });
+      state.bookmarks = state.bookmarks.map((b) => (b.id === id ? bookmark : b));
+      setStatus(note ? "Note saved" : "Note removed", "ok");
+    } catch (err) {
+      setStatus(`Could not save the note: ${err.message}`, "err");
+    }
+    renderBookmarks();
+  };
+  form.addEventListener("submit", (e) => { e.preventDefault(); save(); });
+  input.addEventListener("blur", () => setTimeout(save, 150));
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { e.preventDefault(); done = true; renderBookmarks(); }
+  });
+}
+els.bookmarkBtn.addEventListener("click", addBookmark);
+els.bookmarksList.addEventListener("click", async (e) => {
+  const edit = e.target.closest(".bookmark-edit");
+  if (edit) { editBookmarkNote(Number(edit.dataset.id), edit.closest("li")); return; }
+  const del = e.target.closest(".bookmark-del");
+  const jump = e.target.closest(".bookmark-jump");
+  if (del) {
+    const id = Number(del.dataset.id);
+    try {
+      await api(`/api/books/${state.currentBookId}/bookmarks/${id}`, { method: "DELETE" });
+      state.bookmarks = state.bookmarks.filter((b) => b.id !== id);
+      renderBookmarks();
+    } catch (err) {
+      setStatus(`Could not delete the bookmark: ${err.message}`, "err");
+    }
+  } else if (jump) {
+    const bm = state.bookmarks.find((b) => b.id === Number(jump.dataset.id));
+    if (bm) { playFrom(bm.page, bm.char_offset); showPanel("readAlong"); }
+  }
+});
+
+// ----- panel tabs -----
+const PANELS = ["readAlong", "chaptersPanel", "bookmarksPanel"];
+function showPanel(id) {
+  for (const p of PANELS) els[p === "readAlong" ? "readAlong" : p].hidden = p !== id;
+  document.querySelectorAll(".panel .seg-btn").forEach((b) => {
+    const on = b.dataset.panel === id;
+    b.classList.toggle("seg-btn-active", on);
+    b.setAttribute("aria-selected", String(on));
+  });
+  if (id === "chaptersPanel") {
+    const cur = els.chaptersList.querySelector(".ch-now");
+    if (cur) els.chaptersPanel.scrollTop = cur.offsetTop - els.chaptersPanel.offsetTop - 80;
+  }
+}
+document.querySelectorAll(".panel .seg-btn").forEach((b) => b.addEventListener("click", () => showPanel(b.dataset.panel)));
+
+// ----- speed + sleep chips -----
+function syncSpeedChip() {
+  const v = Number(els.speed.value) || 1;
+  els.speedLabel.textContent = `${v.toFixed(v * 100 % 10 ? 2 : 1)}×`;
+  const match = Array.from(els.speedChip.options).find((o) => Math.abs(Number(o.value) - v) < 0.001);
+  if (match) els.speedChip.value = match.value;
+  els.speedChip.closest(".chip").classList.toggle("chip-on", Math.abs(v - 1) > 0.001);
+  store.set("agr.speed", String(v));
+}
+els.speedChip.addEventListener("change", () => {
+  els.speed.value = els.speedChip.value;
+  els.speed.dispatchEvent(new Event("input"));
+});
+function syncSleepChip() {
+  const v = els.sleepTimer.value;
+  const on = v !== "off";
+  els.sleepChipLabel.textContent = !on ? "Sleep" : v === "page" ? "End of page" : `${v} min`;
+  els.sleepTimer.closest(".chip").classList.toggle("chip-on", on);
+}
+
+// ----- voice sheet -----
+function voiceName() {
+  if (els.engine.value === "browser") return "Device voice";
+  if (els.engine.value === "elevenlabs") return "Premium voice";
+  const v = els.pocketVoice.value.trim();
+  return /^[a-z]+$/i.test(v) ? v.charAt(0).toUpperCase() + v.slice(1) : "Custom voice";
+}
+function syncVoicePicks() {
+  const v = els.pocketVoice.value.trim().toLowerCase();
+  document.querySelectorAll(".voice-pick").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.voice === v)));
+  els.voiceBtnLabel.textContent = voiceName();
+  store.set("agr.voice", JSON.stringify({ engine: els.engine.value, pocketVoice: els.pocketVoice.value.trim() }));
+}
+function restartIfPlaying() {
+  if (!(state.isPlaying || state.isPaused)) return;
+  const page = state.currentPage, offset = state.lastCharOffset;
+  stopInternal().then(() => {
+    setCurrentPage(page);
+    state.resumeAt = { page, offset };
+    playFromCurrent();
+  });
+}
+document.querySelectorAll(".voice-pick").forEach((b) => b.addEventListener("click", () => {
+  if (els.pocketVoice.value === b.dataset.voice) return;
+  els.pocketVoice.value = b.dataset.voice;
+  els.pocketVoice.dispatchEvent(new Event("change"));
+  syncVoicePicks();
+  if (els.engine.value === "pocket") restartIfPlaying();
+}));
+els.pocketVoice.addEventListener("change", syncVoicePicks);
+els.engine.addEventListener("change", syncVoicePicks);
+els.voiceBtn.addEventListener("click", () => {
+  if (typeof els.voiceDialog.showModal === "function") els.voiceDialog.showModal();
+  else els.voiceDialog.setAttribute("open", "");
+});
+els.voiceDialog.addEventListener("click", (e) => { if (e.target === els.voiceDialog) els.voiceDialog.close(); });
+(function restoreVoicePrefs() {
+  try {
+    const p = JSON.parse(store.get("agr.voice") || "null");
+    if (p && ["pocket", "browser", "elevenlabs"].includes(p.engine)) els.engine.value = p.engine;
+    if (p && p.pocketVoice) els.pocketVoice.value = p.pocketVoice;
+  } catch (_) {}
+  const sp = Number(store.get("agr.speed"));
+  if (sp >= 0.5 && sp <= 2) els.speed.value = String(sp);
+  syncVoicePicks();
+})();
+
+// ----- mini player -----
+let miniKey = "";
+function syncMiniPlayer(forceCover = false) {
+  if (!els.miniPlayer) return;
+  const show = Boolean(state.pdfDoc && state.currentBookId && (state.screen === "library" || state.screen === "public"));
+  els.miniPlayer.hidden = !show;
+  document.body.classList.toggle("has-mini", show);
+  if (!show) return;
+  const playing = state.isPlaying && !state.isPaused;
+  const key = `${state.currentBookId}`;
+  if (forceCover || key !== miniKey) {
+    miniKey = key;
+    els.miniCover.innerHTML = coverHtml(state.currentBook || { id: state.currentBookId, title: state.bookTitle });
+  }
+  els.miniTitle.textContent = state.bookTitle;
+  els.miniSub.textContent = `${positionLabel()}${playing ? " · Playing" : state.isPaused ? " · Paused" : ""}`;
+  els.miniToggleIcon.setAttribute("href", playing ? "#i-pause" : "#i-play");
+  els.miniToggle.setAttribute("aria-label", playing ? "Pause" : "Play");
+  els.miniBar.style.width = `${(loadedFraction() * 100).toFixed(1)}%`;
+}
+els.miniOpen.addEventListener("click", () => showScreen("reader"));
+els.miniToggle.addEventListener("click", togglePlay);
+function togglePlay() {
+  if (!state.pdfDoc) return;
+  if (state.isPlaying && !state.isPaused) pauseInternal();
+  else els.play.click();
+  syncPlayButton();
+}
+
+// ----- theme -----
+function currentTheme() {
+  const t = document.documentElement.dataset.theme;
+  if (t) return t;
+  return window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+}
+function syncThemeButton() {
+  const dark = currentTheme() === "dark";
+  els.themeToggle.setAttribute("aria-label", dark ? "Switch to light theme" : "Switch to dark theme");
+  const meta = document.querySelectorAll('meta[name="theme-color"]');
+  meta.forEach((m) => m.setAttribute("content", dark ? "#1c1815" : "#faf6f0"));
+}
+els.themeToggle.addEventListener("click", () => {
+  const next = currentTheme() === "dark" ? "light" : "dark";
+  document.documentElement.dataset.theme = next;
+  store.set("agr.theme", next);
+  syncThemeButton();
+});
+syncThemeButton();
+
+els.brandHome.addEventListener("click", (e) => {
+  e.preventDefault();
+  if (state.user && state.screen !== "library") { showScreen("library"); loadLibrary(); }
+});
+if (els.tabMine) els.tabMine.addEventListener("click", () => {});
+
+// ----- keyboard -----
+document.addEventListener("keydown", (e) => {
+  if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+  const t = e.target;
+  if (t && (t.closest("input, select, textarea, button, [contenteditable], dialog") || t.isContentEditable)) return;
+  if (!state.pdfDoc || state.screen === "auth") return;
+  if (e.key === " " || e.key === "k") { e.preventDefault(); togglePlay(); }
+  else if ((e.key === "ArrowLeft" || e.key === "j") && !els.back30.disabled) { e.preventDefault(); els.back30.click(); }
+  else if ((e.key === "ArrowRight" || e.key === "l") && !els.fwd30.disabled) { e.preventDefault(); els.fwd30.click(); }
+  else if (e.key === "b" || e.key === "B") { e.preventDefault(); addBookmark(); }
+});
+
+// ----- drag a file anywhere onto the page -----
+let dragDepth = 0;
+const hasFiles = (e) => e.dataTransfer && Array.from(e.dataTransfer.types || []).includes("Files");
+window.addEventListener("dragenter", (e) => {
+  if (!hasFiles(e) || !state.user) return;
+  dragDepth++;
+  els.dropOverlay.hidden = false;
+});
+window.addEventListener("dragleave", () => {
+  dragDepth = Math.max(0, dragDepth - 1);
+  if (dragDepth === 0) els.dropOverlay.hidden = true;
+});
+window.addEventListener("dragover", (e) => { if (hasFiles(e)) e.preventDefault(); });
+window.addEventListener("drop", (e) => {
+  if (!hasFiles(e)) return;
+  e.preventDefault();
+  dragDepth = 0;
+  els.dropOverlay.hidden = true;
+  const f = e.dataTransfer.files && e.dataTransfer.files[0];
+  if (f && state.user) uploadFile(f);
+});
+
+// ----- UI clock: play/pause state, read-along highlight, times -----
+setInterval(() => {
+  if (document.hidden) return;
+  syncPlayButton();
+  syncSkipButtons();
+  if (state.screen === "reader" && state.pdfDoc) {
+    if (raPage !== state.currentPage) renderReadAlong();
+    highlightReadAlong();
+    updateTimes();
+  }
+}, 250);
+
+// ----- install as an app -----
+if ("serviceWorker" in navigator && location.protocol === "https:") {
+  window.addEventListener("load", () => navigator.serviceWorker.register("/sw.js").catch(() => {}));
+}
+
 // ----- initial UI state -----
 applyEngineVisibility();
-els.speedLabel.textContent = `${Number(els.speed.value).toFixed(2)}\u00d7`;
+syncSpeedChip();
 syncPlayButton();
 setAuthMode("login");
 

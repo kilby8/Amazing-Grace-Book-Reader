@@ -21,6 +21,8 @@
 //           (into the page's chunked text, see app.js), total_pages,
 //           updated_at. Per reader, so a public book keeps each reader's
 //           own place.
+//   bookmarks: id, user_id, book_id, page, char_offset (same model as
+//           reading_progress), note (optional), created_at. Per reader.
 //   sessions: login sessions, see session-store.js
 //   storage_tickets (Postgres only): short-lived Storage capabilities, see
 //           storage.js
@@ -97,6 +99,16 @@ function sqlite() {
       expires INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS sessions_expires_idx ON sessions(expires);
+    CREATE TABLE IF NOT EXISTS bookmarks (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      book_id     INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      page        INTEGER NOT NULL,
+      char_offset INTEGER NOT NULL DEFAULT 0,
+      note        TEXT,
+      created_at  INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS bookmarks_user_book_idx ON bookmarks(user_id, book_id);
   `);
   // Partial index for the public feed (only rows where it matters).
   _sqlite.exec(
