@@ -77,6 +77,10 @@ const els = {
   pause: $("pause"),
   stop: $("stop"),
   next: $("next"),
+  back30: $("back30"),
+  fwd30: $("fwd30"),
+  sleepTimer: $("sleepTimer"),
+  sleepLabel: $("sleepLabel"),
   audioPos: $("audioPos"),
   audioPosLabel: $("audioPosLabel"),
   nowReading: $("now-reading"),
@@ -1108,6 +1112,8 @@ els.speed.addEventListener("input", () => {
         state.resumeAt = { page: restartFromPage, offset: restartOffset };
         playFromCurrent();
       });
+    } else if (els.engine.value === "pocket") {
+      pocketSetRate(Number(els.speed.value) || 1.0);
     } else if (pocketSource) {
       pocketSource.playbackRate.value = Number(els.speed.value);
     }
@@ -1162,6 +1168,7 @@ els.pocketHealth.addEventListener("click", async () => {
 // ----- transport buttons -----
 els.play.addEventListener("click", () => {
   if (!state.pdfDoc) return;
+  if (els.engine.value !== "browser") setKeepAlive(true);
   if (state.isPaused) {
     resumeInternal();
   } else {
@@ -1218,6 +1225,7 @@ function playFromCurrent() {
   if (els.engine.value === "browser") playBrowserFromCurrent();
   else if (els.engine.value === "elevenlabs") playElevenLabsFromCurrent();
   else playPocketFromCurrent();
+  updateMediaSession();
 }
 
 function pauseInternal() {
@@ -1236,6 +1244,8 @@ function pauseInternal() {
   els.play.disabled = false;
   els.pause.disabled = true;
   syncPlayButton();
+  setKeepAlive(false);
+  updateMediaSession();
   saveProgressNow();
 }
 
@@ -1259,6 +1269,7 @@ function resumeInternal() {
       els.play.disabled = true;
       els.pause.disabled = false;
       syncPlayButton();
+      updateMediaSession();
     }).catch((e) => {
       state.audioCtxSuspended = false;
       setStatus(`Audio resume error: ${e.message}`, "err");
@@ -1280,6 +1291,7 @@ async function stopInternal() {
     // Both pocket and elevenlabs share the WebAudio pipeline
     state.abortPocket = true;
     state.abortElevenLabs = true;
+    stopPocketStream();
     if (pocketSource) {
       try { pocketSource.stop(); } catch (_) {}
       pocketSource = null;
@@ -1302,6 +1314,8 @@ async function stopInternal() {
   syncPlayButton();
   stopPosTicker();
   resetAudioPosUI();
+  setKeepAlive(false);
+  updateMediaSession();
   // Not awaited: the URL and payload are captured synchronously, and
   // prev/next shouldn't wait on the network before playing the next page.
   saveProgressNow();
@@ -1344,6 +1358,12 @@ function speakNextBrowserChunk() {
   if (state.browserIndex >= state.browserQueue.length) {
     if (state.pdfDoc && state.currentPage < state.pdfDoc.numPages) {
       setCurrentPage(state.currentPage + 1);
+      if (sleepTimer.mode === "page") {
+        state.lastCharOffset = 0;
+        stopInternal();
+        clearSleepTimer("Sleep timer: stopped at the end of the page.");
+        return;
+      }
       playBrowserFromCurrent();
     } else {
       setStatus("Reached the end of the document.", "ok");
@@ -1379,6 +1399,356 @@ function speakNextBrowserChunk() {
   window.speechSynthesis.speak(u);
 }
 
+// ----- Pocket playback: one continuous, gapless stream -----
+//
+// The Pocket server answers one request at a time and makes speech about
+// 1.5x faster than it plays (measured on the hosted server: ~34 ms of
+// generation and ~51 ms of audio per character). Cutting each page into
+// fixed 600-char chunks and fetching one ahead left a silence of ~12 s at
+// every page turn and before the first sound. Instead:
+//
+//   - A producer walks the book sentence by sentence, across pages, and
+//     keeps the server busy until POCKET_AHEAD_MAX_S of audio is queued.
+//   - Each request is sized so it finishes well before the queued audio
+//     runs out: at most 0.7 x (queued seconds) / (measured ms per char),
+//     clamped to POCKET_MIN_CHARS..MAX_CHARS_POCKET. The first request is
+//     small, so sound starts within a couple of seconds, and sizes grow
+//     as the queue fills.
+//   - The next buffer is scheduled to start at the exact end time of the
+//     current one, so there is no gap between chunks.
+//
+// Positions use the same (page, char offset) model as the other engines:
+// the offset into the page's sentences joined by single spaces.
+
+const POCKET_MIN_CHARS = 60;
+const POCKET_AHEAD_MAX_S = 150;
+const POCKET_KEEP_BEHIND = 12; // played buffers kept for "back 30 s"
+
+let pocketStream = null;
+
+// Sentences of a page with their offsets. Sentences longer than
+// MAX_CHARS_POCKET are pre-split on words, as chunkText() does.
+function pageAtoms(page) {
+  const atoms = [];
+  let pos = 0;
+  for (const piece of sentencePieces(state.pagesText[page - 1] || "")) {
+    atoms.push({ text: piece, offset: pos });
+    pos += piece.length + 1;
+  }
+  return atoms;
+}
+
+function sentencePieces(text) {
+  const out = [];
+  for (const p of text.split(/(?<=[.!?])\s+|\n+/).map((s) => s.trim()).filter(Boolean)) {
+    if (p.length <= MAX_CHARS_POCKET) { out.push(p); continue; }
+    let wb = "";
+    for (const w of p.split(/\s+/)) {
+      if ((wb + " " + w).trim().length > MAX_CHARS_POCKET) {
+        if (wb) out.push(wb);
+        wb = w;
+      } else {
+        wb = (wb ? wb + " " : "") + w;
+      }
+    }
+    if (wb) out.push(wb);
+  }
+  return out;
+}
+
+// Cut at most maxChars off the front of `text`, preferring a comma or
+// semicolon, then a space. Returns the head; the caller keeps the rest.
+function splitHead(text, maxChars) {
+  if (text.length <= maxChars) return text;
+  const window = text.slice(0, maxChars + 1);
+  const punct = Math.max(window.lastIndexOf(", "), window.lastIndexOf("; "), window.lastIndexOf(": "));
+  if (punct >= maxChars * 0.4) return text.slice(0, punct + 1);
+  const space = window.lastIndexOf(" ");
+  return space > 0 ? text.slice(0, space) : text.slice(0, maxChars);
+}
+
+function pocketRate() {
+  return Number(els.speed.value) || 1.0;
+}
+
+// Seconds of audio queued from now: the rest of the current chunk plus
+// every fetched chunk after it.
+function pocketAheadSeconds(s) {
+  let ahead = 0;
+  const rate = pocketRate();
+  if (s.cur) {
+    const played = s.cur.offset + Math.max(0, getAudioCtx().currentTime - s.cur.startCtx) * s.cur.rate;
+    ahead += Math.max(0, s.items[s.cur.idx].buffer.duration - played) / rate;
+  }
+  const from = s.cur ? s.cur.idx + 1 : s.playIdx;
+  for (let i = from; i < s.items.length && s.items[i].buffer; i++) ahead += s.items[i].buffer.duration / rate;
+  return ahead;
+}
+
+function setPocketPage(page) {
+  if (state.currentPage !== page) setCurrentPage(page);
+  state.pocketQueue = chunkText(state.pagesText[page - 1] || "", MAX_CHARS_POCKET);
+}
+
+// Start (or restart) the stream at a page and char offset.
+function startPocketStream(page, offset) {
+  stopPocketStream();
+  const s = {
+    token: (state.pocketPlayToken || 0) + 1,
+    base: state.pocketBase,
+    voice: els.pocketVoice.value.trim() || undefined,
+    items: [],            // { page, offset, text, buffer }
+    playIdx: 0,           // item to play next when nothing is playing
+    cur: null,            // { idx, source, startCtx, offset, rate }
+    next: null,           // { idx, source } scheduled to start when cur ends
+    waiting: true,        // nothing playing; play items[playIdx] when it arrives
+    prodPage: page,
+    prodAtoms: pageAtoms(page),
+    msPerChar: state.pocketMsPerChar || 40,
+    done: false,          // producer reached the end of the book
+    startOffset: offset,  // where playback will begin, for the slider
+  };
+  // Skip to the sentence that holds `offset`.
+  let i = 0;
+  while (i + 1 < s.prodAtoms.length && s.prodAtoms[i + 1].offset <= offset) i++;
+  s.prodAtoms = s.prodAtoms.slice(i);
+  state.pocketPlayToken = s.token;
+  state.abortPocket = false;
+  pocketStream = s;
+  setPocketPage(page);
+  state.pocketIndex = chunkIndexForOffset(state.pocketQueue, offset);
+  runPocketProducer(s);
+}
+
+function stopPocketStream() {
+  const s = pocketStream;
+  pocketStream = null;
+  state.pocketPlayToken = (state.pocketPlayToken || 0) + 1;
+  if (!s) return;
+  for (const n of [s.cur, s.next]) {
+    if (n && n.source) { try { n.source.stop(); } catch (_) {} }
+  }
+  pocketSource = null;
+}
+
+// Next chunk of text for the producer, crossing pages; null at the end.
+function nextPocketText(s, maxChars) {
+  while (s.prodAtoms.length === 0) {
+    if (!state.pdfDoc || s.prodPage >= state.pdfDoc.numPages) return null;
+    s.prodPage += 1;
+    s.prodAtoms = pageAtoms(s.prodPage);
+  }
+  const first = s.prodAtoms[0];
+  if (first.text.length > maxChars) {
+    const head = splitHead(first.text, maxChars);
+    const rest = first.text.slice(head.length).trim();
+    s.prodAtoms[0] = { text: rest, offset: first.offset + head.length + 1 };
+    if (!rest) s.prodAtoms.shift();
+    return { page: s.prodPage, offset: first.offset, text: head };
+  }
+  let text = first.text;
+  s.prodAtoms.shift();
+  while (s.prodAtoms.length && text.length + 1 + s.prodAtoms[0].text.length <= maxChars) {
+    text += " " + s.prodAtoms.shift().text;
+  }
+  return { page: s.prodPage, offset: first.offset, text };
+}
+
+async function runPocketProducer(s) {
+  const alive = () => pocketStream === s && !state.abortPocket;
+  while (alive()) {
+    const ahead = pocketAheadSeconds(s);
+    if (ahead > POCKET_AHEAD_MAX_S) {
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    const budget = Math.floor((ahead * 1000 * 0.7) / Math.max(5, s.msPerChar));
+    const item = nextPocketText(s, Math.max(POCKET_MIN_CHARS, Math.min(MAX_CHARS_POCKET, budget)));
+    if (!item) { s.done = true; break; }
+    const form = new FormData();
+    form.append("text", item.text);
+    if (s.voice) form.append("voice_url", s.voice);
+    const t0 = performance.now();
+    try {
+      const r = await fetch(`${s.base}/tts`, { method: "POST", body: form });
+      if (!alive()) return;
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        throw new Error(`HTTP ${r.status}: ${body || r.statusText}`);
+      }
+      const arrayBuffer = await r.arrayBuffer();
+      if (!alive()) return;
+      const msPerChar = (performance.now() - t0) / Math.max(1, item.text.length);
+      s.msPerChar = state.pocketMsPerChar = s.msPerChar * 0.6 + msPerChar * 0.4;
+      item.buffer = await getAudioCtx().decodeAudioData(arrayBuffer);
+      if (!alive()) return;
+    } catch (e) {
+      if (!alive()) return;
+      setStatus(`Pocket TTS request failed: ${e.message}. Try the Browser engine instead.`, "err");
+      stopInternal();
+      return;
+    }
+    s.items.push(item);
+    if (s.waiting && s.playIdx === s.items.length - 1) playPocketItem(s, s.playIdx, 0);
+    else schedulePocketNext(s);
+  }
+  // Producer finished: if playback is waiting on an item that will never
+  // come, the book is over.
+  if (alive() && s.waiting && s.playIdx >= s.items.length) finishPocketBook();
+}
+
+function makePocketSource(s, idx, rate) {
+  const ctx = getAudioCtx();
+  const source = ctx.createBufferSource();
+  source.buffer = s.items[idx].buffer;
+  source.playbackRate.value = rate;
+  source.connect(ctx.destination);
+  source.onended = () => onPocketEnded(s, source);
+  return source;
+}
+
+// Play items[idx] now, from `offset` seconds into it.
+function playPocketItem(s, idx, offset) {
+  const ctx = getAudioCtx();
+  if (ctx.state === "suspended" && !state.isPaused) { try { ctx.resume(); } catch (_) {} }
+  for (const n of [s.cur, s.next]) {
+    if (n && n.source) { n.source.onended = null; try { n.source.stop(); } catch (_) {} }
+  }
+  s.next = null;
+  const rate = pocketRate();
+  const source = makePocketSource(s, idx, rate);
+  s.cur = { idx, source, startCtx: ctx.currentTime, offset, rate };
+  s.waiting = false;
+  source.start(0, offset);
+  becameCurrent(s);
+  schedulePocketNext(s);
+}
+
+// If the chunk after the current one is ready, schedule it to start the
+// moment the current one ends.
+function schedulePocketNext(s) {
+  if (!s.cur || s.next) return;
+  const idx = s.cur.idx + 1;
+  if (!s.items[idx] || !s.items[idx].buffer) return;
+  const ctx = getAudioCtx();
+  const endTime = s.cur.startCtx + (s.items[s.cur.idx].buffer.duration - s.cur.offset) / s.cur.rate;
+  if (endTime < ctx.currentTime + 0.05) return; // too close; onended will start it
+  const rate = s.cur.rate;
+  const source = makePocketSource(s, idx, rate);
+  source.start(endTime);
+  s.next = { idx, source, startCtx: endTime, rate };
+}
+
+function onPocketEnded(s, source) {
+  if (pocketStream !== s || !s.cur || s.cur.source !== source) return;
+  if (state.audioCtxSuspended) return;
+  if (s.next) {
+    s.cur = { idx: s.next.idx, source: s.next.source, startCtx: s.next.startCtx, offset: 0, rate: s.next.rate };
+    s.next = null;
+    becameCurrent(s);
+    schedulePocketNext(s);
+    return;
+  }
+  const idx = s.cur.idx + 1;
+  s.cur = null;
+  pocketSource = null;
+  if (s.items[idx] && s.items[idx].buffer) {
+    playPocketItem(s, idx, 0);
+  } else if (s.done && idx >= s.items.length) {
+    finishPocketBook();
+  } else {
+    s.playIdx = idx;
+    s.waiting = true;
+    setStatus(`Pocket TTS: loading page ${state.currentPage} …`, "busy");
+  }
+}
+
+// Bookkeeping when a chunk starts: page, slider, progress, memory.
+function becameCurrent(s) {
+  const item = s.items[s.cur.idx];
+  const pageTurn = item.page !== state.currentPage;
+  if (pageTurn && sleepTimer.mode === "page") {
+    // "End of page" sleep timer: stop at the page turn; Play picks up
+    // from the start of the next page.
+    setPocketPage(item.page);
+    state.lastCharOffset = item.offset;
+    stopInternal();
+    state.resumeAt = { page: item.page, offset: item.offset };
+    clearSleepTimer("Sleep timer: stopped at the end of the page.");
+    return;
+  }
+  setPocketPage(item.page);
+  pocketSource = s.cur.source;
+  pocketSource._startCtxTime = s.cur.startCtx - s.cur.offset / s.cur.rate;
+  state.pocketIndex = chunkIndexForOffset(state.pocketQueue, item.offset);
+  state.lastCharOffset = item.offset;
+  scheduleProgressSave();
+  setStatus(`Reading page ${state.currentPage} via Pocket TTS …`, "busy");
+  updateMediaSession();
+  // Let go of buffers far behind; "back 30 s" only needs the last few.
+  const drop = s.cur.idx - POCKET_KEEP_BEHIND;
+  if (drop >= 0 && s.items[drop]) s.items[drop].buffer = null;
+}
+
+function finishPocketBook() {
+  setStatus("Reached the end of the document.", "ok");
+  state.isPlaying = false;
+  els.play.disabled = !state.pdfDoc;
+  els.pause.disabled = true;
+  syncPlayButton();
+  updateMediaSession();
+}
+
+// Speed change while playing: re-anchor the current chunk at the new rate
+// and reschedule the next one.
+function pocketSetRate(rate) {
+  const s = pocketStream;
+  if (!s || !s.cur) return;
+  const ctx = getAudioCtx();
+  const played = s.cur.offset + Math.max(0, ctx.currentTime - s.cur.startCtx) * s.cur.rate;
+  s.cur.source.playbackRate.value = rate;
+  s.cur.startCtx = ctx.currentTime;
+  s.cur.offset = played;
+  s.cur.rate = rate;
+  pocketSource._startCtxTime = s.cur.startCtx - s.cur.offset / rate;
+  if (s.next) {
+    s.next.source.onended = null;
+    try { s.next.source.stop(); } catch (_) {}
+    s.next = null;
+  }
+  schedulePocketNext(s);
+}
+
+// Move by `seconds` of audio (negative = back). Inside the kept buffers
+// this is exact; past them it restarts the stream from the nearest
+// sentence, estimating ~20 characters per second.
+function pocketSeekBy(seconds) {
+  const s = pocketStream;
+  if (!s || !s.cur) return false;
+  const ctx = getAudioCtx();
+  let idx = s.cur.idx;
+  let pos = s.cur.offset + Math.max(0, ctx.currentTime - s.cur.startCtx) * s.cur.rate + seconds;
+  while (pos < 0 && idx > 0 && s.items[idx - 1].buffer) { idx -= 1; pos += s.items[idx].buffer.duration; }
+  while (s.items[idx].buffer && pos >= s.items[idx].buffer.duration && s.items[idx + 1] && s.items[idx + 1].buffer) {
+    pos -= s.items[idx].buffer.duration;
+    idx += 1;
+  }
+  const item = s.items[idx];
+  if (pos >= 0 && pos < item.buffer.duration) {
+    playPocketItem(s, idx, pos);
+    return true;
+  }
+  // Outside what we have: restart from text.
+  if (pos < 0) {
+    startPocketStream(item.page, Math.max(0, item.offset + Math.round(pos * 20)));
+  } else if (s.prodAtoms.length) {
+    startPocketStream(s.prodPage, s.prodAtoms[0].offset);
+  } else if (!s.done && state.pdfDoc && s.prodPage < state.pdfDoc.numPages) {
+    startPocketStream(s.prodPage + 1, 0);
+  }
+  return true;
+}
+
 function playPocketFromCurrent() {
   const base = els.pocketUrl.value.trim().replace(/\/+$/, "");
   if (!base) {
@@ -1389,149 +1759,27 @@ function playPocketFromCurrent() {
     const next = findNextPageWithText(state.currentPage);
     if (next > 0) {
       setCurrentPage(next);
-      setStatus(`Skipping to page ${next} \u2014 the current page has no extractable text.`);
+      setStatus(`Skipping to page ${next} — the current page has no extractable text.`);
     } else {
       setStatus("No pages with extractable text.", "err");
       return;
     }
   }
-  const text = state.pagesText[state.currentPage - 1] || "";
-  state.pocketQueue = chunkText(text, MAX_CHARS_POCKET);
-  state.pocketIndex = takeResumeIndex(state.pocketQueue);
-  state.abortPocket = false;
-  state.pocketPlayToken = (state.pocketPlayToken || 0) + 1;
-  state.pocketBuffers = new Array(state.pocketQueue.length).fill(null);
+  const r = state.resumeAt;
+  state.resumeAt = null;
+  const offset = r && r.page === state.currentPage ? r.offset : 0;
   state.pocketBase = base;
-  if (state.pocketQueue.length === 0) {
-    setStatus(`Page ${state.currentPage} has no extractable text.`, "err");
-    return;
-  }
-  setStatus(`Reading page ${state.currentPage} via Pocket TTS \u2026`, "busy");
+  setStatus(`Reading page ${state.currentPage} via Pocket TTS …`, "busy");
   state.isPlaying = true;
   state.isPaused = false;
+  state.audioCtxSuspended = false;
   els.play.disabled = true;
   els.pause.disabled = false;
   els.stop.disabled = false;
   syncPlayButton();
   try { getAudioCtx().resume(); } catch (_) {}
-  const myToken = state.pocketPlayToken;
-  fetchAndDecodeChunk(state.pocketIndex)
-    .then(() => {
-      if (state.abortPocket) return;
-      if (state.pocketPlayToken !== myToken) return;
-      playNextPocketChunk();
-    })
-    .catch(() => {});
-}
-
-async function fetchAndDecodeChunk(index) {
-  const myToken = state.pocketPlayToken;
-  if (state.abortPocket) return;
-  if (state.pocketBuffers[index]) return state.pocketBuffers[index];
-  const chunk = state.pocketQueue[index];
-  const voice = els.pocketVoice.value.trim() || undefined;
-  const form = new FormData();
-  form.append("text", chunk);
-  if (voice) form.append("voice_url", voice);
-  try {
-    const r = await fetch(`${state.pocketBase}/tts`, { method: "POST", body: form });
-    if (state.abortPocket || state.pocketPlayToken !== myToken) return;
-    if (!r.ok) {
-      const body = await r.text().catch(() => "");
-      throw new Error(`HTTP ${r.status}: ${body || r.statusText}`);
-    }
-    const arrayBuffer = await r.arrayBuffer();
-    if (state.abortPocket || state.pocketPlayToken !== myToken) return;
-    const ctx = getAudioCtx();
-    if (ctx.state === "suspended") {
-      try { await ctx.resume(); } catch (_) {}
-    }
-    const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
-    if (state.abortPocket || state.pocketPlayToken !== myToken) return;
-    state.pocketBuffers[index] = buffer;
-    return buffer;
-  } catch (e) {
-    if (!state.abortPocket && state.pocketPlayToken === myToken) {
-      setStatus(`Pocket TTS request failed: ${e.message}. Try the Browser engine instead.`, "err");
-      state.isPlaying = false;
-      els.play.disabled = !state.pdfDoc;
-      els.pause.disabled = true;
-    }
-    throw e;
-  }
-}
-
-function playNextPocketChunk() {
-  if (state.abortPocket) return;
-  if (state.pocketIndex >= state.pocketQueue.length) {
-    if (state.pdfDoc && state.currentPage < state.pdfDoc.numPages) {
-      setCurrentPage(state.currentPage + 1);
-      playPocketFromCurrent();
-    } else {
-      setStatus("Reached the end of the document.", "ok");
-      state.isPlaying = false;
-      els.play.disabled = !state.pdfDoc;
-      els.pause.disabled = true;
-      syncPlayButton();
-    }
-    return;
-  }
-  const buffer = state.pocketBuffers[state.pocketIndex];
-  if (buffer) {
-    playDecodedChunk(buffer);
-    const nextIdx = state.pocketIndex + 1;
-    if (nextIdx < state.pocketQueue.length && !state.pocketBuffers[nextIdx]) {
-      fetchAndDecodeChunk(nextIdx).catch(() => {});
-    }
-  } else {
-    setStatus(
-      `Pocket TTS: loading chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`,
-      "busy"
-    );
-    const myToken = state.pocketPlayToken;
-    fetchAndDecodeChunk(state.pocketIndex)
-      .then((buf) => {
-        if (state.abortPocket) return;
-        if (state.pocketPlayToken !== myToken) return;
-        if (!buf) return;
-        playDecodedChunk(buf);
-        const nextIdx = state.pocketIndex + 1;
-        if (nextIdx < state.pocketQueue.length && !state.pocketBuffers[nextIdx]) {
-          fetchAndDecodeChunk(nextIdx).catch(() => {});
-        }
-      })
-      .catch(() => {});
-  }
-}
-
-function playDecodedChunk(buffer) {
-  const ctx = getAudioCtx();
-  const source = ctx.createBufferSource();
-  source.buffer = buffer;
-  source.playbackRate.value = Number(els.speed.value) || 1.0;
-  source.connect(ctx.destination);
-  pocketSource = source;
-  noteChunkStart(state.pocketQueue, state.pocketIndex);
-  // Stash the audioCtx timestamp at start so the position ticker can
-  // compute elapsed time within this chunk (accounting for current speed).
-  source._startCtxTime = ctx.currentTime;
-  source.onended = () => {
-    if (pocketSource !== source) return;
-    pocketSource = null;
-    if (state.abortPocket) return;
-    // Chrome fires source.onended synchronously when audioCtx.suspend() runs;
-    // without this guard the chunk index would advance during pause, and
-    // the next resume would play the FOLLOWING chunk from offset 0 instead
-    // of resuming the paused one.
-    if (state.audioCtxSuspended) return;
-    state.pocketIndex += 1;
-    playNextPocketChunk();
-  };
-  source.start(0);
-  setStatus(
-    `Pocket TTS: chunk ${state.pocketIndex + 1}/${state.pocketQueue.length} on page ${state.currentPage} \u2026`,
-    "busy"
-  );
+  startPocketStream(state.currentPage, offset);
+  updateMediaSession();
 }
 
 // ----- ElevenLabs playback (server-proxied; same WebAudio pipeline as pocket) -----
@@ -1726,8 +1974,10 @@ function refreshAudioPosUI() {
   const queue = currentChunkQueue();
   const idx = currentChunkIndex();
   els.audioPos.max = String(Math.max(1, queue.length));
-  if (!state.isDraggingSlider) {
-    els.audioPos.value = String(Math.min(Number(els.audioPos.max), idx));
+  // While paused the knob stays where playback stopped.
+  if (!state.isDraggingSlider && !state.isPaused) {
+    const v = els.engine.value === "pocket" && pocketStream ? pocketSliderValue(0) : idx;
+    els.audioPos.value = String(Math.min(Number(els.audioPos.max), v));
   }
   const totalPages = state.pdfDoc ? state.pdfDoc.numPages : 0;
   if (els.audioPosLabel) {
@@ -1756,7 +2006,7 @@ function startPosTicker() {
       const max = Math.max(1, queue.length);
       els.audioPos.max = String(max);
       if (!state.isDraggingSlider) {
-        els.audioPos.value = String(Math.min(max, idx + frac));
+        els.audioPos.value = String(Math.min(max, engine === "pocket" ? pocketSliderValue(frac) : idx + frac));
       }
       const totalPages = state.pdfDoc ? state.pdfDoc.numPages : 0;
       if (els.audioPosLabel) {
@@ -1771,6 +2021,22 @@ function startPosTicker() {
     posTickerRaf = requestAnimationFrame(tick);
   };
   posTickerRaf = requestAnimationFrame(tick);
+}
+
+// Pocket chunks don't line up with the page's fixed 600-char chunks the
+// slider counts in, so place the knob by character position instead.
+function pocketSliderValue(frac) {
+  const s = pocketStream;
+  if (!s) return state.pocketIndex;
+  let pos = s.startOffset;
+  if (s.cur) {
+    const item = s.items[s.cur.idx];
+    pos = item.offset + frac * (item.text.length + 1);
+  }
+  const starts = chunkStartOffsets(state.pocketQueue);
+  const i = chunkIndexForOffset(state.pocketQueue, pos);
+  const len = (state.pocketQueue[i] || "").length + 1;
+  return i + Math.min(1, Math.max(0, (pos - starts[i]) / len));
 }
 
 function stopPosTicker() {
@@ -1788,16 +2054,27 @@ async function jumpToChunk(targetIdx) {
   const buffers = currentChunkBuffers();
   if (queue.length === 0) return;
   const clamped = Math.max(0, Math.min(queue.length - 1, targetIdx));
+  if (engine === "pocket") {
+    state.isPlaying = true;
+    state.isPaused = false;
+    state.audioCtxSuspended = false;
+    els.play.disabled = true;
+    els.pause.disabled = false;
+    els.stop.disabled = false;
+    syncPlayButton();
+    try { await getAudioCtx().resume(); } catch (_) {}
+    startPocketStream(state.currentPage, chunkStartOffsets(queue)[clamped]);
+    return;
+  }
 
-  // CRITICAL: set abortPocket/abortElevenLabs BEFORE stopping the source.
+  // CRITICAL: set abortElevenLabs BEFORE stopping the source.
   // source.stop() fires onended synchronously, and the existing onended
   // handler would otherwise advance the chunk index and create a new
   // source for the FOLLOWING chunk — then jumpToChunk would create yet
   // another source for the target chunk, and both would play at once
   // (audible as overlapping / "crazy" audio). With the abort flag set,
   // the spurious onended bails out and only the target chunk plays.
-  if (engine === "elevenlabs") state.abortElevenLabs = true;
-  else state.abortPocket = true;
+  state.abortElevenLabs = true;
 
   // Stop whatever is playing right now. The onended handler will fire
   // synchronously and bail on the abort flag above.
@@ -1808,13 +2085,8 @@ async function jumpToChunk(targetIdx) {
 
   // Bump the playback token so any in-flight fetch for the old chunk is
   // discarded by its own myToken guard.
-  if (engine === "elevenlabs") {
-    state.elevenLabsPlayToken = (state.elevenLabsPlayToken || 0) + 1;
-    state.elevenLabsIndex = clamped;
-  } else {
-    state.pocketPlayToken = (state.pocketPlayToken || 0) + 1;
-    state.pocketIndex = clamped;
-  }
+  state.elevenLabsPlayToken = (state.elevenLabsPlayToken || 0) + 1;
+  state.elevenLabsIndex = clamped;
 
   // We're continuing playback, not starting over.
   state.isPlaying = true;
@@ -1829,34 +2101,24 @@ async function jumpToChunk(targetIdx) {
 
   const buffer = buffers[clamped];
   if (buffer) {
-    if (engine === "elevenlabs") playElevenLabsDecodedChunk(buffer);
-    else playDecodedChunk(buffer);
+    playElevenLabsDecodedChunk(buffer);
   } else {
     setStatus(
       `Loading chunk ${clamped + 1}/${queue.length} on page ${state.currentPage} \u2026`,
       "busy"
     );
-    if (engine === "elevenlabs") {
-      fetchAndDecodeElevenLabsChunk(clamped).then((b) => {
-        if (!b) return;
-        // Only play if we are still on this chunk (user didn't jump again).
-        if (state.elevenLabsIndex !== clamped) return;
-        playElevenLabsDecodedChunk(b);
-      }).catch(() => {});
-    } else {
-      fetchAndDecodeChunk(clamped).then((b) => {
-        if (!b) return;
-        if (state.pocketIndex !== clamped) return;
-        playDecodedChunk(b);
-      }).catch(() => {});
-    }
+    fetchAndDecodeElevenLabsChunk(clamped).then((b) => {
+      if (!b) return;
+      // Only play if we are still on this chunk (user didn't jump again).
+      if (state.elevenLabsIndex !== clamped) return;
+      playElevenLabsDecodedChunk(b);
+    }).catch(() => {});
   }
 
   // Clear the abort flag now that the new source has taken over — the
   // NEXT onended (when the new chunk finishes naturally) should advance
   // to the chunk after `clamped` as normal.
-  if (engine === "elevenlabs") state.abortElevenLabs = false;
-  else state.abortPocket = false;
+  state.abortElevenLabs = false;
 }
 
 // ----- slider event wiring -----
@@ -1887,6 +2149,143 @@ if (els.audioPos) {
     const target = Math.floor(Number(els.audioPos.value));
     jumpToChunk(target);
   });
+}
+
+// ----- Audible-style controls: 30 s skips, sleep timer, lock screen -----
+
+// 30 s back / forward. Pocket seeks inside its audio; ElevenLabs and the
+// browser voice move one chunk (a sentence or two).
+function skipSeconds(seconds) {
+  if (!state.pdfDoc || (!state.isPlaying && !state.isPaused)) return;
+  const engine = els.engine.value;
+  if (engine === "pocket") {
+    if (state.isPaused) resumeInternal();
+    pocketSeekBy(seconds);
+    return;
+  }
+  if (engine === "elevenlabs") {
+    jumpToChunk(state.elevenLabsIndex + (seconds < 0 ? -1 : 1));
+    return;
+  }
+  const queue = state.browserQueue;
+  const target = state.browserIndex + (seconds < 0 ? -1 : 1);
+  const page = state.currentPage;
+  if (target >= queue.length) {
+    if (state.currentPage < state.pdfDoc.numPages) els.next.click();
+    return;
+  }
+  const offset = chunkStartOffsets(queue)[Math.max(0, target)] || 0;
+  stopInternal().then(() => {
+    setCurrentPage(page);
+    state.resumeAt = { page, offset };
+    playFromCurrent();
+  });
+}
+els.back30.addEventListener("click", () => skipSeconds(-30));
+els.fwd30.addEventListener("click", () => skipSeconds(30));
+
+// The skip buttons follow the transport state.
+function syncSkipButtons() {
+  const active = Boolean(state.pdfDoc) && (state.isPlaying || state.isPaused);
+  els.back30.disabled = !active;
+  els.fwd30.disabled = !active;
+}
+
+// Sleep timer: pause after N minutes, or stop at the next page turn.
+const sleepTimer = { mode: "off", until: 0, timer: null, ticker: null };
+function clearSleepTimer(message) {
+  clearTimeout(sleepTimer.timer);
+  clearInterval(sleepTimer.ticker);
+  sleepTimer.mode = "off";
+  sleepTimer.timer = sleepTimer.ticker = null;
+  els.sleepTimer.value = "off";
+  els.sleepLabel.hidden = true;
+  if (message) setStatus(message, "ok");
+}
+function showSleepRemaining() {
+  const left = Math.max(0, sleepTimer.until - Date.now());
+  const m = Math.floor(left / 60000);
+  const sec = String(Math.floor((left % 60000) / 1000)).padStart(2, "0");
+  els.sleepLabel.textContent = `Pausing in ${m}:${sec}`;
+  els.sleepLabel.hidden = false;
+}
+els.sleepTimer.addEventListener("change", () => {
+  const v = els.sleepTimer.value;
+  clearTimeout(sleepTimer.timer);
+  clearInterval(sleepTimer.ticker);
+  sleepTimer.mode = v === "off" ? "off" : v === "page" ? "page" : "min";
+  if (sleepTimer.mode === "off") { clearSleepTimer(); return; }
+  if (sleepTimer.mode === "page") {
+    els.sleepLabel.textContent = "Stops when this page or chapter ends";
+    els.sleepLabel.hidden = false;
+    return;
+  }
+  sleepTimer.until = Date.now() + Number(v) * 60000;
+  showSleepRemaining();
+  sleepTimer.ticker = setInterval(showSleepRemaining, 1000);
+  sleepTimer.timer = setTimeout(() => {
+    pauseInternal();
+    clearSleepTimer("Sleep timer: paused.");
+  }, Number(v) * 60000);
+});
+
+// Lock screen, headphones and car controls (Media Session API).
+const MS = "mediaSession" in navigator ? navigator.mediaSession : null;
+function updateMediaSession() {
+  syncSkipButtons();
+  if (!MS) return;
+  try {
+    const total = state.pdfDoc ? state.pdfDoc.numPages : 0;
+    const unit = state.pdfDoc && state.pdfDoc._kind === "epub" ? "Chapter" : "Page";
+    const chapter = state.chapterTitles && state.chapterTitles[state.currentPage - 1];
+    MS.metadata = new MediaMetadata({
+      title: chapter || state.bookTitle || "Amazing Grace Reader",
+      artist: state.bookTitle && chapter ? state.bookTitle : "Amazing Grace Reader",
+      album: total ? `${unit} ${state.currentPage} of ${total}` : "",
+    });
+    MS.playbackState = state.isPlaying ? "playing" : state.isPaused ? "paused" : "none";
+  } catch (_) {}
+}
+if (MS) {
+  const on = (action, fn) => { try { MS.setActionHandler(action, fn); } catch (_) {} };
+  on("play", () => els.play.click());
+  on("pause", () => pauseInternal());
+  on("stop", () => stopInternal());
+  on("seekbackward", (d) => skipSeconds(-((d && d.seekOffset) || 30)));
+  on("seekforward", (d) => skipSeconds((d && d.seekOffset) || 30));
+  on("previoustrack", () => els.prev.click());
+  on("nexttrack", () => els.next.click());
+}
+
+// A silent, looping <audio> element plays alongside Web Audio. It makes
+// phones treat the page as a media player (lock-screen controls, keeps
+// playing with the screen off) and, on iPhones, lets speech play with
+// the silent switch on.
+let keepAliveEl = null;
+function silentWavUrl() {
+  const rate = 8000, n = rate; // one second
+  const buf = new ArrayBuffer(44 + n * 2);
+  const v = new DataView(buf);
+  const w = (o, str) => { for (let i = 0; i < str.length; i++) v.setUint8(o + i, str.charCodeAt(i)); };
+  w(0, "RIFF"); v.setUint32(4, 36 + n * 2, true); w(8, "WAVE"); w(12, "fmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  w(36, "data"); v.setUint32(40, n * 2, true);
+  return URL.createObjectURL(new Blob([buf], { type: "audio/wav" }));
+}
+function setKeepAlive(on) {
+  try {
+    if (navigator.audioSession) navigator.audioSession.type = "playback";
+    if (on) {
+      if (!keepAliveEl) {
+        keepAliveEl = new Audio(silentWavUrl());
+        keepAliveEl.loop = true;
+      }
+      keepAliveEl.play().catch(() => {});
+    } else if (keepAliveEl) {
+      keepAliveEl.pause();
+    }
+  } catch (_) {}
 }
 
 // ----- initial UI state -----
