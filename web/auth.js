@@ -9,7 +9,7 @@
 // the session. It does NOT check ownership - that's the caller's job.
 
 const bcrypt = require("bcrypt");
-const { getDb } = require("./db");
+const { query, queryOne } = require("./db");
 
 const BCRYPT_COST = 12;
 const MIN_USERNAME_LEN = 3;
@@ -33,14 +33,14 @@ async function createUser(username, password) {
     throw new Error(`Password must be at least ${MIN_PASSWORD_LEN} characters`);
   }
   const hash = await bcrypt.hash(p, BCRYPT_COST);
-  const db = getDb();
   try {
-    const info = db
-      .prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)")
-      .run(u, hash);
-    return { id: info.lastInsertRowid, username: u };
+    const row = await queryOne(
+      "INSERT INTO users (username, password_hash) VALUES (?, ?) RETURNING id",
+      [u, hash]
+    );
+    return { id: row.id, username: u };
   } catch (e) {
-    if (e.code === "SQLITE_CONSTRAINT_UNIQUE") {
+    if (e.isUniqueViolation) {
       throw new Error("That username is already taken");
     }
     throw e;
@@ -49,10 +49,10 @@ async function createUser(username, password) {
 
 async function verifyUser(username, password) {
   const u = normalizeUsername(username);
-  const db = getDb();
-  const row = db
-    .prepare("SELECT id, username, password_hash FROM users WHERE username = ?")
-    .get(u);
+  const row = await queryOne(
+    "SELECT id, username, password_hash FROM users WHERE username = ?",
+    [u]
+  );
   if (!row) return null;
   const ok = await bcrypt.compare(String(password || ""), row.password_hash);
   if (!ok) return null;

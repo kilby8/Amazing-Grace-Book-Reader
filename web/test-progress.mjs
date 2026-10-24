@@ -12,6 +12,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { startCdn } from "./test-cdn.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PORT = 8790 + Math.floor(Math.random() * 100);
@@ -164,32 +165,14 @@ try {
     const { default: puppeteer } = await import("puppeteer-core");
     // CHROME_ARGS adds launch flags, e.g. --proxy-server=... behind a proxy.
     const extraArgs = (process.env.CHROME_ARGS || "").split(" ").filter(Boolean);
-    const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-sandbox", "--disable-gpu", ...extraArgs] });
+    // CDN_DIR serves the cdnjs scripts (pdf.js, jszip) from a local copy for
+    // machines without internet access; see test-cdn.mjs.
+    const cdn = await startCdn(process.env.CDN_DIR);
+    const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ["--no-sandbox", "--disable-gpu", ...extraArgs, ...(cdn ? cdn.chromeArgs : [])] });
     try {
       const page = await browser.newPage();
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
-      // CDN_DIR serves the cdnjs scripts (pdf.js, jszip) from a local copy,
-      // laid out as <CDN_DIR>/<library>/<file>, for machines without
-      // internet access. Other external requests are dropped.
-      if (process.env.CDN_DIR) {
-        await page.setRequestInterception(true);
-        page.on("request", (req) => {
-          const url = new URL(req.url());
-          if (url.origin === BASE) return req.continue();
-          const m = url.hostname === "cdnjs.cloudflare.com" && url.pathname.match(/^\/ajax\/libs\/([^/]+)\/[^/]+\/(.+)$/);
-          const file = m && join(process.env.CDN_DIR, m[1], m[2]);
-          if (file && existsSync(file)) {
-            return req.respond({
-              status: 200,
-              contentType: "text/javascript",
-              headers: { "Access-Control-Allow-Origin": "*" },
-              body: readFileSync(file),
-            });
-          }
-          req.abort();
-        });
-      }
       const [name, value] = alice.cookie.split("=");
       await page.setCookie({ name, value, url: BASE });
       await page.goto(`${BASE}/index.html`, { waitUntil: "networkidle0" });
@@ -226,6 +209,7 @@ try {
       check("no page errors", errors.length === 0, errors.join(" | "));
     } finally {
       await browser.close();
+      if (cdn) cdn.close();
     }
   } else {
     console.log("SKIP  browser checks (set CHROME to a Chrome/Chromium binary)");
