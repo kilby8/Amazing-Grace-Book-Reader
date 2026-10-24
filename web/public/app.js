@@ -1022,6 +1022,7 @@ async function restoreProgress(bookId) {
     console.warn("Could not load reading position:", e.message);
   } finally {
     if (state.currentBookId === bookId) state.progressReady = true;
+    scheduleWarmPocket();
   }
 }
 
@@ -1044,6 +1045,7 @@ function setCurrentPage(n) {
   const ct = state.chapterTitles && state.chapterTitles[n - 1];
   if (ct) setNowReadingTitle(ct);
   else if (state.bookTitle) setNowReadingTitle(state.bookTitle);
+  scheduleWarmPocket();
 }
 
 // ----- engine + speed -----
@@ -1088,7 +1090,9 @@ els.elevenLabsStatus.addEventListener("click", async () => {
   }
 });
 
+els.pocketVoice.addEventListener("change", scheduleWarmPocket);
 els.engine.addEventListener("change", () => {
+  scheduleWarmPocket();
   applyEngineVisibility();
   if (state.isPlaying || state.isPaused) {
     const restartFromPage = state.currentPage;
@@ -1316,6 +1320,7 @@ async function stopInternal() {
   resetAudioPosUI();
   setKeepAlive(false);
   updateMediaSession();
+  scheduleWarmPocket();
   // Not awaited: the URL and payload are captured synchronously, and
   // prev/next shouldn't wait on the network before playing the next page.
   saveProgressNow();
@@ -1508,16 +1513,52 @@ function startPocketStream(page, offset) {
     done: false,          // producer reached the end of the book
     startOffset: offset,  // where playback will begin, for the slider
   };
-  // Skip to the sentence that holds `offset`.
-  let i = 0;
-  while (i + 1 < s.prodAtoms.length && s.prodAtoms[i + 1].offset <= offset) i++;
-  s.prodAtoms = s.prodAtoms.slice(i);
+  s.prodAtoms = atomsFrom(s.prodAtoms, offset);
   state.pocketPlayToken = s.token;
   state.abortPocket = false;
   pocketStream = s;
   setPocketPage(page);
   state.pocketIndex = chunkIndexForOffset(state.pocketQueue, offset);
   runPocketProducer(s);
+}
+
+// Drop the sentences before the one that holds `offset`.
+function atomsFrom(atoms, offset) {
+  let i = 0;
+  while (i + 1 < atoms.length && atoms[i + 1].offset <= offset) i++;
+  return atoms.slice(i);
+}
+
+// Warm start: while idle, fetch the audio for the first words Play would
+// speak, so pressing Play sounds at once instead of after a round trip.
+let pocketWarm = null; // { key, promise of ArrayBuffer }
+let pocketWarmTimer = null;
+const pocketWarmKey = (base, voice, text) => `${base}\n${voice || ""}\n${text}`;
+
+function scheduleWarmPocket() {
+  clearTimeout(pocketWarmTimer);
+  pocketWarmTimer = setTimeout(warmPocketStart, 700);
+}
+
+function warmPocketStart() {
+  if (els.engine.value !== "pocket" || state.isPlaying || !state.pdfDoc) return;
+  const base = els.pocketUrl.value.trim().replace(/\/+$/, "");
+  if (!base) return;
+  const page = state.currentPage;
+  const r = state.resumeAt;
+  const offset = r && r.page === page ? r.offset : 0;
+  const item = nextPocketText({ prodPage: page, prodAtoms: atomsFrom(pageAtoms(page), offset) }, POCKET_MIN_CHARS);
+  if (!item) return;
+  const voice = els.pocketVoice.value.trim() || undefined;
+  const key = pocketWarmKey(base, voice, item.text);
+  if (pocketWarm && pocketWarm.key === key) return;
+  const form = new FormData();
+  form.append("text", item.text);
+  if (voice) form.append("voice_url", voice);
+  const promise = fetch(`${base}/tts`, { method: "POST", body: form })
+    .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(`HTTP ${res.status}`))));
+  promise.catch(() => { if (pocketWarm && pocketWarm.key === key) pocketWarm = null; });
+  pocketWarm = { key, promise };
 }
 
 function stopPocketStream() {
@@ -1568,18 +1609,24 @@ async function runPocketProducer(s) {
     const form = new FormData();
     form.append("text", item.text);
     if (s.voice) form.append("voice_url", s.voice);
+    const warm = pocketWarm && pocketWarm.key === pocketWarmKey(s.base, s.voice, item.text) ? pocketWarm.promise : null;
+    if (warm) pocketWarm = null;
     const t0 = performance.now();
     try {
-      const r = await fetch(`${s.base}/tts`, { method: "POST", body: form });
+      let arrayBuffer = warm ? await warm.catch(() => null) : null;
       if (!alive()) return;
-      if (!r.ok) {
-        const body = await r.text().catch(() => "");
-        throw new Error(`HTTP ${r.status}: ${body || r.statusText}`);
+      if (!arrayBuffer) {
+        const r = await fetch(`${s.base}/tts`, { method: "POST", body: form });
+        if (!alive()) return;
+        if (!r.ok) {
+          const body = await r.text().catch(() => "");
+          throw new Error(`HTTP ${r.status}: ${body || r.statusText}`);
+        }
+        arrayBuffer = await r.arrayBuffer();
+        if (!alive()) return;
+        const msPerChar = (performance.now() - t0) / Math.max(1, item.text.length);
+        s.msPerChar = state.pocketMsPerChar = s.msPerChar * 0.6 + msPerChar * 0.4;
       }
-      const arrayBuffer = await r.arrayBuffer();
-      if (!alive()) return;
-      const msPerChar = (performance.now() - t0) / Math.max(1, item.text.length);
-      s.msPerChar = state.pocketMsPerChar = s.msPerChar * 0.6 + msPerChar * 0.4;
       item.buffer = await getAudioCtx().decodeAudioData(arrayBuffer);
       if (!alive()) return;
     } catch (e) {

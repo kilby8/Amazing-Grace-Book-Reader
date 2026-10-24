@@ -295,9 +295,19 @@ try {
   const st = await status2();
   check("sleep timer stops at the end of the page", /Sleep timer: stopped/.test(st), st);
   check("…and Play resumes on the next page", Number(await page.$eval("#pageJump", (n) => n.value)) === Number(pageBefore) + 1);
-  await page.click("#play");
+  // Warm start: after a moment idle, Play sounds without a round trip, and
+  // the prefetched audio is used rather than requested twice.
+  await new Promise((r) => setTimeout(r, 2500));
+  const reqBefore = requested.length;
+  const warmClick = await page.evaluate(() => { window.__plays = []; document.getElementById("play").click(); return performance.now(); });
   await wait(8);
   check("…which plays", /Reading page/.test(await status2()), await status2());
+  const warmPlays = await page.evaluate(() => window.__plays);
+  const warmFirst = warmPlays.length ? real(warmPlays[0].startMs - warmClick) : Infinity;
+  console.log(`INFO  first sound after Play when idle first (warm start): ${warmFirst.toFixed(2)} s`);
+  check("warm start: Play after idling sounds within 0.5 s", warmFirst <= 0.5, `${warmFirst.toFixed(2)} s`);
+  const warmReqs = requested.slice(reqBefore - 1);
+  check("warm audio is used, not requested again", new Set(warmReqs).size === warmReqs.length, warmReqs.map((t) => t.slice(0, 30)).join(" | "));
   await page.click("#stop");
 
   check("no page errors", errors.length === 0, errors.join(" | "));
