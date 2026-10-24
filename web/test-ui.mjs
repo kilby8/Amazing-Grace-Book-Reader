@@ -123,7 +123,7 @@ try {
   // ----- API: bookmarks -----
   const stamp = Date.now();
   const alice = client(), bob = client();
-  await alice.req("/api/auth/register", { method: "POST", json: { username: `ui_a_${stamp}`, password: "password1" } });
+  await alice.req("/api/auth/register", { method: "POST", json: { username: `ui_a_${stamp}_longusername1`, password: "password1" } });
   await bob.req("/api/auth/register", { method: "POST", json: { username: `ui_b_${stamp}`, password: "password1" } });
   const grace = await upload(alice, "Amazing Grace.pdf", PAGES);
   const walden = await upload(alice, "Walden.pdf", [SENTENCES]);

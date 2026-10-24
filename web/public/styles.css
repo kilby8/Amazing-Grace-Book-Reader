@@ -357,7 +357,7 @@ img { display: block; max-width: 100%; }
 .brand-name { font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; letter-spacing: -0.01em; }
 .brand-name-soft { color: var(--color-fg-muted); font-weight: 500; }
 .topbar-meta { display: flex; align-items: center; gap: var(--space-2); }
-.account-name { font-size: var(--text-sm); color: var(--color-fg-muted); }
+.account-name { font-size: var(--text-sm); color: var(--color-fg-muted); max-width: 16ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .theme-icon-light { display: none; }
 :root[data-theme="dark"] .theme-icon-dark { display: none; }
 :root[data-theme="dark"] .theme-icon-light { display: block; }
@@ -421,7 +421,10 @@ img { display: block; max-width: 100%; }
 
 /* ----- Library ----- */
 .library-head { display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-4); margin-bottom: var(--space-5); }
-.library-greeting { font-family: var(--font-display); font-size: var(--text-3xl); font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; margin-top: 4px; }
+.library-head > div { min-width: 0; }
+.library-head > .btn { flex: none; }
+/* Usernames have no spaces, so let a long one break instead of widening the page. */
+.library-greeting { font-family: var(--font-display); font-size: var(--text-3xl); font-weight: 600; letter-spacing: -0.02em; line-height: 1.15; margin-top: 4px; overflow-wrap: anywhere; }
 
 .continue {
   display: grid; grid-template-columns: 150px 1fr; gap: var(--space-5); align-items: center;

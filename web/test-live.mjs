@@ -1,6 +1,7 @@
 // Smoke test for a deployed site (Vercel + Supabase). Walks the same HTTP
 // flow the browser does: sign up, upload a PDF straight to Storage, open
-// it, save a reading position, check another user can't reach it, delete.
+// it, save a reading position and a bookmark, check another user can't
+// reach them, delete.
 // Creates two throwaway accounts named smoke_<timestamp>_a/_b.
 //
 //   node test-live.mjs https://amazing-grace-reader.vercel.app
@@ -98,6 +99,16 @@ check("save progress", r.status === 200);
 r = await a("/api/books");
 const listed = (r.json.books || []).find((x) => x.id === book.id);
 check("library shows progress", listed && listed.progress_page === 1, JSON.stringify(listed));
+
+r = await a(`/api/books/${book.id}/bookmarks`, { method: "POST", body: { page: 1, char_offset: 0, note: "smoke" } });
+const bm = r.json && r.json.bookmark;
+check("add a bookmark", r.status === 201 && bm && bm.note === "smoke", JSON.stringify(r.json));
+r = await a(`/api/books/${book.id}/bookmarks/${bm && bm.id}`, { method: "PATCH", body: { note: "edited" } });
+check("edit its note", r.status === 200 && r.json.bookmark.note === "edited", JSON.stringify(r.json));
+r = await b(`/api/books/${book.id}/bookmarks`);
+check("B can't see A's bookmarks", r.status === 404, String(r.status));
+r = await a(`/api/books/${book.id}/bookmarks`);
+check("bookmarks list", r.status === 200 && r.json.bookmarks.length === 1, JSON.stringify(r.json));
 
 r = await a(`/api/books/${book.id}/visibility`, { method: "POST", body: { visibility: "public" } });
 check("share publicly", r.status === 200);
