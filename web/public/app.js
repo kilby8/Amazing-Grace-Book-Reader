@@ -34,6 +34,8 @@ const els = {
   authForm: $("authForm"),
   authUsername: $("authUsername"),
   authPassword: $("authPassword"),
+  togglePassword: $("togglePassword"),
+  togglePasswordIcon: $("togglePasswordIcon"),
   authError: $("authError"),
   authSubmit: $("authSubmit"),
   authSubmitLabel: $("authSubmitLabel"),
@@ -296,6 +298,19 @@ function setAuthMode(mode) {
 els.tabLogin.addEventListener("click", () => setAuthMode("login"));
 els.tabRegister.addEventListener("click", () => setAuthMode("register"));
 
+// Show/hide the password so it can be checked while typing. It goes back
+// to hidden after signing in or out, so it isn't left showing.
+function setPasswordVisible(show) {
+  els.authPassword.type = show ? "text" : "password";
+  els.togglePassword.setAttribute("aria-pressed", String(show));
+  els.togglePassword.setAttribute("aria-label", show ? "Hide password" : "Show password");
+  els.togglePasswordIcon.setAttribute("href", show ? "#i-eye-off" : "#i-eye");
+}
+els.togglePassword.addEventListener("click", () => {
+  setPasswordVisible(els.authPassword.type === "password");
+  els.authPassword.focus();
+});
+
 function showAuthError(msg) {
   els.authError.textContent = msg;
   els.authError.hidden = false;
@@ -321,6 +336,7 @@ els.authForm.addEventListener("submit", async (e) => {
     showScreen("library");
     setStatus(`Welcome, ${user.username}`, "ok");
     els.authPassword.value = "";
+    setPasswordVisible(false);
   } catch (err) {
     showAuthError(err.message);
     setStatus(err.message, "err");
@@ -341,6 +357,7 @@ els.logoutBtn.addEventListener("click", async () => {
   setStatus("Signed out");
   els.authUsername.value = "";
   els.authPassword.value = "";
+  setPasswordVisible(false);
   setAuthMode("login");
 });
 

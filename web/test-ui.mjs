@@ -304,6 +304,28 @@ try {
     const small = await phone.evaluate(() => Array.from(document.querySelectorAll("#readerScreen button")).filter((b) => b.offsetParent && (b.offsetWidth < 40 || b.offsetHeight < 36)).map((b) => b.id || b.className));
     check("player buttons are big enough to tap", small.length === 0, small.join(", "));
     await phone.close();
+    // Sign-in form: show/hide password, then sign in through it.
+    const ctx = await browser.createBrowserContext();
+    const signin = await ctx.newPage();
+    signin.on("pageerror", (e) => pageErrors.push(e.message));
+    await signin.goto(`${BASE}/index.html`, { waitUntil: "networkidle0" });
+    await signin.waitForSelector("#authPassword", { visible: true });
+    await signin.type("#authUsername", `ui_b_${stamp}`);
+    await signin.type("#authPassword", "password1");
+    const pwType = () => signin.$eval("#authPassword", (n) => n.type);
+    const hiddenAtFirst = (await pwType()) === "password";
+    await signin.click("#togglePassword");
+    const shown = (await pwType()) === "text" && (await signin.$eval("#togglePassword", (n) => n.getAttribute("aria-label"))) === "Hide password";
+    const shownValue = await signin.$eval("#authPassword", (n) => n.value);
+    await signin.click("#togglePassword");
+    const hiddenAgain = (await pwType()) === "password";
+    check("password can be shown while typing and hidden again", hiddenAtFirst && shown && shownValue === "password1" && hiddenAgain);
+    await signin.click("#togglePassword");
+    await signin.click("#authSubmit");
+    await signin.waitForFunction(() => !document.getElementById("libraryScreen").hidden, { timeout: 10000 }).catch(() => {});
+    check("sign in through the form; password hidden again after", await visible(signin, "#libraryScreen") && (await pwType()) === "password");
+    await ctx.close();
+
     check("no page errors", pageErrors.length === 0, pageErrors.join(" | "));
   }
 } catch (e) {
