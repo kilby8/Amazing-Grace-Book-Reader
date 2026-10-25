@@ -7,7 +7,9 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "test": "node test-progress.mjs"
+    "test": "node test-progress.mjs",
+    "test:playback": "node test-playback.mjs",
+    "test:ui": "node test-ui.mjs"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",
@@ -15,9 +17,13 @@
     "express-rate-limit": "^8.7.0",
     "express-session": "^1.19.0",
     "helmet": "^8.3.0",
-    "multer": "^1.4.5-lts.1"
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "puppeteer-core": "^25.10.0"
+  },
+  "engines": {
+    "node": "22.x"
   }
 }

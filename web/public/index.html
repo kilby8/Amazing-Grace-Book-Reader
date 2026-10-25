@@ -1,0 +1,442 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Amazing Grace Reader</title>
+  <meta name="description" content="Drop a PDF or EPUB and listen to it like an audiobook, with the text following along." />
+  <meta name="theme-color" content="#faf6f0" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#1c1815" media="(prefers-color-scheme: dark)" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Grace Reader" />
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="icon" href="icon.svg" type="image/svg+xml" />
+  <link rel="apple-touch-icon" href="icon-192.png" />
+  <script src="theme.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    rel="stylesheet"
+    href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=Inter:wght@400;500;600;700&display=swap"
+  />
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
+  <svg width="0" height="0" class="visually-hidden" aria-hidden="true" focusable="false" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <symbol id="i-play" viewBox="0 0 24 24"><path fill="currentColor" d="M8 5.14v13.72a1 1 0 0 0 1.52.85l10.9-6.86a1 1 0 0 0 0-1.7L9.52 4.29A1 1 0 0 0 8 5.14z"/></symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24"><rect fill="currentColor" x="6" y="4.5" width="4" height="15" rx="1.2"/><rect fill="currentColor" x="14" y="4.5" width="4" height="15" rx="1.2"/></symbol>
+      <symbol id="i-prev" viewBox="0 0 24 24"><path fill="currentColor" d="M6 5.5h2v13H6zM19 6.3v11.4a.8.8 0 0 1-1.25.66L9.6 12.66a.8.8 0 0 1 0-1.32l8.15-5.7A.8.8 0 0 1 19 6.3z"/></symbol>
+      <symbol id="i-next" viewBox="0 0 24 24"><path fill="currentColor" d="M16 5.5h2v13h-2zM5 6.3v11.4a.8.8 0 0 0 1.25.66l8.15-5.7a.8.8 0 0 0 0-1.32L6.25 5.64A.8.8 0 0 0 5 6.3z"/></symbol>
+      <symbol id="i-back" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M15 18l-6-6 6-6"/></symbol>
+      <symbol id="i-bookmark" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M6.5 3.5h11a1 1 0 0 1 1 1v16l-6.5-4-6.5 4v-16a1 1 0 0 1 1-1z"/></symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5z"/></symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></g></symbol>
+      <symbol id="i-voice" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></g></symbol>
+      <symbol id="i-plus" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M12 5v14M5 12h14"/></symbol>
+      <symbol id="i-search" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></g></symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24"><rect fill="currentColor" x="6" y="6" width="12" height="12" rx="2"/></symbol>
+      <symbol id="i-close" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></symbol>
+      <symbol id="i-note" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 20h4L19 9l-4-4L4 16v4ZM13.5 6.5l4 4"/></symbol>
+      <symbol id="i-eye" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></g></symbol>
+      <symbol id="i-eye-off" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M10.6 5.1A10.8 10.8 0 0 1 12 5c6.4 0 10 7 10 7a17.6 17.6 0 0 1-3 3.9M6.6 6.6C3.8 8.4 2 12 2 12s3.6 7 10 7c1.9 0 3.6-.6 5-1.5M9.9 9.9a3 3 0 0 0 4.2 4.2M3 3l18 18"/></g></symbol>
+      <symbol id="i-trash" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" d="M4 7h16M10 11v6M14 11v6M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12M9 7V4h6v3"/></symbol>
+      <symbol id="i-lock" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7.5a4 4 0 0 1 8 0v3"/></g></symbol>
+      <symbol id="i-globe" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></g></symbol>
+      <symbol id="i-upload" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/><path d="M12 13V7M9 10l3-3 3 3"/></g></symbol>
+      <symbol id="open-book" viewBox="0 0 120 80">
+        <ellipse cx="60" cy="44" rx="58" ry="32" fill="currentColor" fill-opacity="0.14"/>
+        <path d="M58 22 C 40 16, 22 18, 12 22 L 12 66 C 22 62, 40 60, 58 66 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M62 22 C 80 16, 98 18, 108 22 L 108 66 C 98 62, 80 60, 62 66 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M60 22 L 60 66" stroke="currentColor" stroke-width="1.6"/>
+        <line x1="22" y1="30" x2="50" y2="28" stroke="currentColor" stroke-opacity="0.35"/>
+        <line x1="22" y1="38" x2="50" y2="36" stroke="currentColor" stroke-opacity="0.35"/>
+        <line x1="22" y1="46" x2="46" y2="44" stroke="currentColor" stroke-opacity="0.35"/>
+        <line x1="70" y1="28" x2="98" y2="30" stroke="currentColor" stroke-opacity="0.35"/>
+        <line x1="70" y1="36" x2="98" y2="38" stroke="currentColor" stroke-opacity="0.35"/>
+        <line x1="74" y1="44" x2="98" y2="46" stroke="currentColor" stroke-opacity="0.35"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <header class="topbar" role="banner">
+    <div class="topbar-inner">
+      <a class="brand" href="#" id="brandHome" aria-label="Amazing Grace Reader, go to library">
+        <img class="brand-mark" src="icon.svg" alt="" width="34" height="34" />
+        <span class="brand-name">Amazing Grace <span class="brand-name-soft">Reader</span></span>
+      </a>
+      <nav class="topbar-meta" aria-label="Account">
+        <button id="themeToggle" type="button" class="btn-icon-round" aria-label="Switch to dark theme" title="Theme">
+          <svg class="theme-icon-dark" width="20" height="20" aria-hidden="true"><use href="#i-moon"/></svg>
+          <svg class="theme-icon-light" width="20" height="20" aria-hidden="true"><use href="#i-sun"/></svg>
+        </button>
+        <span id="accountName" class="account-name" hidden></span>
+        <button id="logoutBtn" type="button" class="btn btn-ghost btn-small" hidden>Sign out</button>
+      </nav>
+    </div>
+  </header>
+
+  <!-- Transient messages. Errors stay until the next message. -->
+  <div class="toast-region">
+    <p id="status" class="toast" data-state="idle" role="status" aria-live="polite">Checking session…</p>
+  </div>
+
+  <main id="main" class="layout">
+
+    <!-- ============== SIGN IN ============== -->
+    <section id="authScreen" class="screen auth" aria-label="Sign in" hidden>
+      <div class="auth-art" aria-hidden="true">
+        <div class="auth-art-covers">
+          <span class="cover cover-deco" style="--h:28"><span class="cover-title">Amazing Grace</span></span>
+          <span class="cover cover-deco" style="--h:200"><span class="cover-title">Walden</span></span>
+          <span class="cover cover-deco" style="--h:150"><span class="cover-title">Pilgrim's Progress</span></span>
+        </div>
+        <p class="auth-art-line">Your books, read aloud. The words follow along.</p>
+      </div>
+      <div class="auth-card">
+        <h1 class="auth-heading">Listen to any book</h1>
+        <p class="auth-sub">Add a PDF or EPUB and it reads to you like an audiobook. Your library and your place in every book are saved to your account.</p>
+
+        <div class="auth-tabs" role="tablist">
+          <button id="tabLogin" type="button" class="auth-tab auth-tab-active" role="tab" aria-selected="true">Sign in</button>
+          <button id="tabRegister" type="button" class="auth-tab" role="tab" aria-selected="false">Create account</button>
+        </div>
+
+        <form id="authForm" class="auth-form" novalidate>
+          <div class="field">
+            <label for="authUsername" class="field-label">Username</label>
+            <input id="authUsername" type="text" class="field-control" autocomplete="username" spellcheck="false" autocapitalize="none" required minlength="3" maxlength="32" />
+          </div>
+          <div class="field">
+            <label for="authPassword" class="field-label">Password</label>
+            <div class="password-wrap">
+              <input id="authPassword" type="password" class="field-control" autocomplete="current-password" required minlength="6" />
+              <button id="togglePassword" type="button" class="password-toggle" aria-label="Show password" aria-pressed="false" aria-controls="authPassword">
+                <svg width="22" height="22" aria-hidden="true"><use id="togglePasswordIcon" href="#i-eye"/></svg>
+              </button>
+            </div>
+          </div>
+          <p id="authError" class="auth-error" role="alert" aria-live="polite" hidden></p>
+          <button id="authSubmit" type="submit" class="btn btn-primary btn-full btn-large">
+            <span id="authSubmitLabel">Sign in</span>
+          </button>
+        </form>
+        <p class="auth-accent">&ldquo;He himself gives everyone life and breath, and everything else.&rdquo; <span>Acts 17:25</span></p>
+      </div>
+    </section>
+
+    <!-- ============== LIBRARY ============== -->
+    <section id="libraryScreen" class="screen library" aria-label="Your library" hidden>
+      <div class="library-head">
+        <div>
+          <p class="eyebrow" id="libraryEyebrow">Library</p>
+          <h2 class="library-greeting" id="libraryGreeting">Welcome back.</h2>
+        </div>
+        <button id="uploadPickBtn" type="button" class="btn btn-primary">
+          <svg width="18" height="18" aria-hidden="true"><use href="#i-plus"/></svg>
+          <span>Add book</span>
+        </button>
+        <input id="filePicker" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub" hidden />
+      </div>
+
+      <!-- Continue listening -->
+      <section id="continueCard" class="continue" aria-label="Continue listening" hidden>
+        <div class="continue-cover" id="continueCover"></div>
+        <div class="continue-body">
+          <p class="eyebrow">Continue listening</p>
+          <h3 class="continue-title" id="continueTitle"></h3>
+          <p class="continue-meta" id="continueMeta"></p>
+          <div class="progress progress-lg"><span id="continueBar"></span></div>
+          <button id="continueBtn" type="button" class="btn btn-primary btn-large">
+            <svg width="20" height="20" aria-hidden="true"><use href="#i-play"/></svg>
+            <span>Resume</span>
+          </button>
+        </div>
+      </section>
+
+      <div class="lib-toolbar">
+        <div class="seg" role="tablist" aria-label="Which library">
+          <button type="button" class="seg-btn seg-btn-active" role="tab" aria-selected="true" id="tabMine">My books</button>
+          <button type="button" class="seg-btn" role="tab" aria-selected="false" id="browsePublicBtn">Public library</button>
+        </div>
+        <div class="lib-filters">
+          <label class="search">
+            <svg width="18" height="18" aria-hidden="true"><use href="#i-search"/></svg>
+            <input id="librarySearch" type="search" placeholder="Search books" aria-label="Search your books" autocomplete="off" />
+          </label>
+          <div class="select-wrap select-compact">
+            <select id="librarySort" class="field-control" aria-label="Sort books">
+              <option value="recent">Recently played</option>
+              <option value="added">Recently added</option>
+              <option value="title">Title A–Z</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <ul id="bookGrid" class="cover-grid" aria-live="polite"></ul>
+      <p id="librarySearchEmpty" class="muted center" hidden>No books match that search.</p>
+
+      <section id="drop" class="drop" tabindex="0" role="button" aria-label="Add a book: drop a PDF or EPUB here, or press to choose a file">
+        <svg class="drop-icon" width="34" height="34" aria-hidden="true"><use href="#i-upload"/></svg>
+        <div>
+          <p class="drop-headline">Add a book</p>
+          <p class="drop-sub">Drop a PDF or EPUB here, or tap to choose one.</p>
+        </div>
+      </section>
+
+      <div id="libraryEmpty" class="library-empty" hidden>
+        <svg class="book-illustration" aria-hidden="true"><use href="#open-book"/></svg>
+        <p class="library-empty-title">Your shelf is empty</p>
+        <p class="muted">Add a PDF or EPUB and it will read to you.</p>
+      </div>
+    </section>
+
+    <!-- ============== PUBLIC LIBRARY ============== -->
+    <section id="publicScreen" class="screen library" aria-label="Public library" hidden>
+      <div class="library-head">
+        <div>
+          <p class="eyebrow">Public library</p>
+          <h2 class="library-greeting" id="publicGreeting">Books shared by everyone</h2>
+        </div>
+      </div>
+      <div class="lib-toolbar">
+        <div class="seg" role="tablist" aria-label="Which library">
+          <button type="button" class="seg-btn" role="tab" aria-selected="false" id="backFromPublic">My books</button>
+          <button type="button" class="seg-btn seg-btn-active" role="tab" aria-selected="true">Public library</button>
+        </div>
+      </div>
+      <ul id="publicGrid" class="cover-grid" aria-live="polite"></ul>
+      <div id="publicEmpty" class="library-empty" hidden>
+        <svg class="book-illustration" aria-hidden="true"><use href="#open-book"/></svg>
+        <p class="library-empty-title">Nothing shared yet</p>
+        <p class="muted">Make one of your books public and it will appear here.</p>
+      </div>
+    </section>
+
+    <!-- ============== PLAYER ============== -->
+    <section id="readerScreen" class="screen reader" aria-label="Player" hidden>
+      <div class="reader-bar">
+        <button id="backToLibrary" type="button" class="btn btn-ghost btn-back">
+          <svg width="20" height="20" aria-hidden="true"><use href="#i-back"/></svg>
+          <span>Library</span>
+        </button>
+        <button id="voiceBtn" type="button" class="btn btn-ghost">
+          <svg width="18" height="18" aria-hidden="true"><use href="#i-voice"/></svg>
+          <span id="voiceBtnLabel">Voice</span>
+        </button>
+      </div>
+
+      <div class="reader-grid">
+        <section class="player" aria-label="Now playing">
+          <div class="player-cover" id="playerCover"></div>
+
+          <div id="now-reading" class="now-reading">
+            <h2 id="playerBookTitle" class="player-title"></h2>
+            <p class="player-sub">
+              <span id="nrTitle" class="nr-chapter-title"></span>
+            </p>
+            <p class="player-where">
+              <label class="nr-chapter">
+                <span id="pageUnit">Page</span>
+                <input id="pageJump" class="nr-chapter-input" type="number" min="1" value="1" disabled inputmode="numeric" aria-label="Go to page" />
+                <span>of</span>
+                <span id="pageCount" class="nr-chapter-total">0</span>
+              </label>
+              <span id="pagePrint" class="nr-print" hidden></span>
+            </p>
+          </div>
+
+          <section class="audio-progress" aria-label="Position in this page">
+            <input id="audioPos" type="range" min="0" max="1" step="0.01" value="0" disabled aria-label="Position in this page" />
+            <div class="audio-progress-meta">
+              <span id="audioPosLabel">—</span>
+              <span id="timeLeft"></span>
+            </div>
+            <div class="progress progress-book" title="Progress through the book"><span id="bookBar"></span></div>
+          </section>
+
+          <section class="transport" aria-label="Playback controls">
+            <button id="prev" type="button" class="btn-round btn-round-sm" disabled aria-label="Previous page" title="Previous page">
+              <svg width="22" height="22" aria-hidden="true"><use href="#i-prev"/></svg>
+            </button>
+            <button id="back30" type="button" class="btn-round btn-skip" disabled aria-label="Back 30 seconds" title="Back 30 seconds">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 12a8.5 8.5 0 1 0 2.5-6"/><path d="M3.5 3v4.5H8"/></svg>
+              <span class="btn-skip-num" aria-hidden="true">30</span>
+            </button>
+            <div class="play-slot">
+              <button id="play" type="button" class="btn-play" disabled aria-label="Play">
+                <svg id="playIcon" width="34" height="34" aria-hidden="true"><use href="#i-play"/></svg>
+                <span id="playLabel" class="visually-hidden">Play</span>
+              </button>
+              <button id="pause" type="button" class="btn-play" disabled aria-label="Pause" hidden>
+                <svg width="34" height="34" aria-hidden="true"><use href="#i-pause"/></svg>
+              </button>
+            </div>
+            <button id="fwd30" type="button" class="btn-round btn-skip" disabled aria-label="Forward 30 seconds" title="Forward 30 seconds">
+              <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.5 12a8.5 8.5 0 1 1-2.5-6"/><path d="M20.5 3v4.5H16"/></svg>
+              <span class="btn-skip-num" aria-hidden="true">30</span>
+            </button>
+            <button id="next" type="button" class="btn-round btn-round-sm" disabled aria-label="Next page" title="Next page">
+              <svg width="22" height="22" aria-hidden="true"><use href="#i-next"/></svg>
+            </button>
+          </section>
+
+          <div class="chips">
+            <label class="chip" title="Speed">
+              <span class="chip-label" id="speedLabel">1.0×</span>
+              <select id="speedChip" aria-label="Playback speed">
+                <option value="0.75">0.75×</option>
+                <option value="0.9">0.9×</option>
+                <option value="1" selected>1.0× normal</option>
+                <option value="1.1">1.1×</option>
+                <option value="1.25">1.25×</option>
+                <option value="1.5">1.5×</option>
+                <option value="1.75">1.75×</option>
+                <option value="2">2.0×</option>
+              </select>
+            </label>
+            <label class="chip" title="Sleep timer">
+              <svg width="16" height="16" aria-hidden="true"><use href="#i-moon"/></svg>
+              <span class="chip-label" id="sleepChipLabel">Sleep</span>
+              <select id="sleepTimer" aria-label="Sleep timer">
+                <option value="off" selected>Sleep timer off</option>
+                <option value="5">5 minutes</option>
+                <option value="15">15 minutes</option>
+                <option value="30">30 minutes</option>
+                <option value="45">45 minutes</option>
+                <option value="60">1 hour</option>
+                <option value="page">End of this page</option>
+              </select>
+            </label>
+            <button id="bookmarkBtn" type="button" class="chip" disabled title="Add a bookmark here (B)">
+              <svg width="16" height="16" aria-hidden="true"><use href="#i-bookmark"/></svg>
+              <span class="chip-label">Bookmark</span>
+            </button>
+            <button id="stop" type="button" class="chip chip-quiet" disabled title="Stop">
+              <svg width="14" height="14" aria-hidden="true"><use href="#i-stop"/></svg>
+              <span class="chip-label">Stop</span>
+            </button>
+          </div>
+          <p id="sleepLabel" class="sleep-label" hidden></p>
+          <input id="speed" type="range" min="0.5" max="2.0" step="0.05" value="1.0" aria-label="Playback speed (fine)" class="speed-fine" hidden />
+        </section>
+
+        <section class="panel" aria-label="Book">
+          <div class="seg seg-full" role="tablist" aria-label="Book panel">
+            <button type="button" class="seg-btn seg-btn-active" role="tab" aria-selected="true" aria-controls="readAlong" data-panel="readAlong" id="tabReadAlong">Read along</button>
+            <button type="button" class="seg-btn" role="tab" aria-selected="false" aria-controls="chaptersPanel" data-panel="chaptersPanel" id="tabChapters"><span id="chaptersTabLabel">Pages</span></button>
+            <button type="button" class="seg-btn" role="tab" aria-selected="false" aria-controls="bookmarksPanel" data-panel="bookmarksPanel" id="tabBookmarks">Bookmarks <span id="bookmarkCount" class="count" hidden></span></button>
+          </div>
+          <div id="readAlong" class="read-along" role="tabpanel" aria-labelledby="tabReadAlong" tabindex="0">
+            <p class="muted">The text appears here and follows the voice. Tap a sentence to listen from there.</p>
+          </div>
+          <div id="chaptersPanel" class="panel-list" role="tabpanel" aria-labelledby="tabChapters" hidden>
+            <ol id="chaptersList" class="chapters"></ol>
+          </div>
+          <div id="bookmarksPanel" class="panel-list" role="tabpanel" aria-labelledby="tabBookmarks" hidden>
+            <ul id="bookmarksList" class="bookmarks"></ul>
+            <p id="bookmarksEmpty" class="muted center">No bookmarks yet. Press <strong>Bookmark</strong> while listening to save your place.</p>
+          </div>
+          <pre id="textOut" hidden></pre>
+        </section>
+      </div>
+    </section>
+  </main>
+
+  <!-- Mini player: shown on the library while a book is loaded -->
+  <div id="miniPlayer" class="mini" hidden>
+    <button id="miniOpen" type="button" class="mini-open" aria-label="Open the player">
+      <span class="mini-cover" id="miniCover"></span>
+      <span class="mini-text">
+        <span class="mini-title" id="miniTitle"></span>
+        <span class="mini-sub" id="miniSub"></span>
+      </span>
+    </button>
+    <button id="miniToggle" type="button" class="btn-round mini-toggle" aria-label="Play">
+      <svg width="24" height="24" aria-hidden="true"><use id="miniToggleIcon" href="#i-play"/></svg>
+    </button>
+    <div class="mini-progress"><span id="miniBar"></span></div>
+  </div>
+
+  <!-- Voice settings -->
+  <dialog id="voiceDialog" class="sheet" aria-labelledby="voiceDialogTitle">
+    <form method="dialog" class="sheet-inner">
+      <div class="sheet-head">
+        <h2 id="voiceDialogTitle">Voice</h2>
+        <button type="submit" class="btn-icon-round" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </div>
+
+      <div class="field">
+        <label for="engine" class="field-label">Reader</label>
+        <div class="select-wrap">
+          <select id="engine" class="field-control">
+            <option value="pocket" selected>Natural voice (recommended)</option>
+            <option value="browser">This device’s voice (works offline)</option>
+            <option value="elevenlabs">Premium voice (ElevenLabs, needs a plan)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field" id="pocketVoiceRow" hidden>
+        <span class="field-label">Narrator</span>
+        <div class="voice-picks" role="radiogroup" aria-label="Narrator">
+          <button type="button" class="voice-pick" role="radio" data-voice="alba" aria-checked="true"><span class="voice-pick-name">Alba</span><span class="voice-pick-desc">Warm, calm</span></button>
+          <button type="button" class="voice-pick" role="radio" data-voice="eve" aria-checked="false"><span class="voice-pick-name">Eve</span><span class="voice-pick-desc">Bright, clear</span></button>
+          <button type="button" class="voice-pick" role="radio" data-voice="lola" aria-checked="false"><span class="voice-pick-name">Lola</span><span class="voice-pick-desc">Soft, gentle</span></button>
+        </div>
+      </div>
+
+      <div class="field" id="browserVoiceRow">
+        <label for="browserVoice" class="field-label">Device voice</label>
+        <div class="input-with-action">
+          <div class="select-wrap select-wrap-grow">
+            <select id="browserVoice" class="field-control"></select>
+          </div>
+          <button id="refreshVoices" type="button" class="btn btn-ghost" title="Reload the list of voices">Refresh</button>
+        </div>
+      </div>
+
+      <div class="field" id="elevenLabsRow">
+        <label for="elevenLabsVoice" class="field-label">ElevenLabs voice id</label>
+        <div class="input-with-action">
+          <input id="elevenLabsVoice" type="text" class="field-control" placeholder="EXAVITQu4vr4xnSDxMaL" value="EXAVITQu4vr4xnSDxMaL" />
+          <button id="elevenLabsStatus" type="button" class="btn btn-ghost">Test</button>
+        </div>
+        <p class="field-hint">Default is Sarah. The key stays on the server.</p>
+      </div>
+
+      <details class="advanced">
+        <summary>Advanced</summary>
+        <div class="field" id="pocketRow" hidden>
+          <label for="pocketUrl" class="field-label">Natural voice server</label>
+          <div class="input-with-action">
+            <input id="pocketUrl" type="text" class="field-control" spellcheck="false" autocomplete="off" value="https://gracereader.duckdns.org/pocket" />
+            <button id="pocketHealth" type="button" class="btn btn-ghost">Test</button>
+          </div>
+        </div>
+        <div class="field">
+          <label for="pocketVoice" class="field-label">Custom narrator id or voice URL</label>
+          <input id="pocketVoice" type="text" class="field-control" spellcheck="false" autocomplete="off" value="alba" />
+        </div>
+        <p class="field-hint">Keyboard: Space plays or pauses, ← and → skip 30 seconds, B adds a bookmark.</p>
+        <p class="field-hint">Text from <a href="https://mozilla.github.io/pdf.js/" target="_blank" rel="noopener">pdf.js</a>. Natural voice by <a href="https://github.com/kyutai/pocket-tts" target="_blank" rel="noopener">Kyutai Pocket TTS</a>.</p>
+      </details>
+    </form>
+  </dialog>
+
+  <!-- Full-window drop target while dragging a file over the page -->
+  <div id="dropOverlay" class="drop-overlay" hidden aria-hidden="true">
+    <div class="drop-overlay-inner">
+      <svg width="48" height="48"><use href="#i-upload"/></svg>
+      <p>Drop to add it to your library</p>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
