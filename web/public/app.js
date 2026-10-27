@@ -55,6 +55,15 @@ const els = {
   publicScreen: $("publicScreen"),
   publicGrid: $("publicGrid"),
   publicEmpty: $("publicEmpty"),
+  publicEyebrow: $("publicEyebrow"),
+  publicSearch: $("publicSearch"),
+  publicSearchEmpty: $("publicSearchEmpty"),
+  shareBookBtn: $("shareBookBtn"),
+  shareFromEmpty: $("shareFromEmpty"),
+  shareDialog: $("shareDialog"),
+  shareList: $("shareList"),
+  shareListEmpty: $("shareListEmpty"),
+  shareFindBtn: $("shareFindBtn"),
   backFromPublic: $("backFromPublic"),
 
   // Reader screen
@@ -151,8 +160,8 @@ const state = {
   user: null,                    // { id, username } | null
   screen: "loading",             // "loading" | "auth" | "library" | "reader"
   // Library
-  books: [],                     // [{id,title,author,kind,size,added_at,last_opened_at,visibility,shared_at}]
-  publicBooks: [],               // [{id,title,author,kind,size,shared_at,shared_by}]
+  books: [],                     // [{id,title,author,kind,size,added_at,last_opened_at,visibility,shared_at,source,owned,shared_by}]
+  publicBooks: [],               // [{id,title,author,kind,size,shared_at,source,shared_by,mine,saved,saves,free,progress_page,...}]
   // Reader
   pdfDoc: null,
   pagesText: [],
@@ -407,6 +416,7 @@ function renderLibrary() {
     li.className = "book-card" + (b.id === state.currentBookId ? " book-card-playing" : "");
     li.dataset.id = String(b.id);
     const isPublic = b.visibility === "public";
+    const owned = isOwned(b);
     const pct = bookPercent(b);
     li.innerHTML = `
       <button class="book-card-open" data-id="${b.id}" aria-label="Open ${escapeHtml(b.title)}">
@@ -414,16 +424,14 @@ function renderLibrary() {
         <div class="book-card-body">
           <h3 class="book-card-title">${escapeHtml(b.title)}</h3>
           ${b.author ? `<p class="book-card-author">${escapeHtml(b.author)}</p>` : ""}
+          ${owned ? "" : `<p class="book-card-meta book-card-from"><svg width="12" height="12" aria-hidden="true"><use href="#i-globe"/></svg>Shared by ${escapeHtml(b.shared_by || "a reader")}</p>`}
           <p class="book-card-meta">${bookMetaHtml(b)}</p>
           ${pct != null ? `<div class="progress" aria-hidden="true"><span style="width:${pct}%"></span></div>` : ""}
         </div>
       </button>
       <div class="book-card-actions">
-        <button class="book-card-share" data-id="${b.id}" aria-pressed="${isPublic}" aria-label="${isPublic ? "Make private" : "Share in the public library"}" title="${isPublic ? "Public: anyone signed in can listen. Tap to make private." : "Private: only you. Tap to share it in the public library."}">
-          <svg width="14" height="14" aria-hidden="true"><use href="#${isPublic ? "i-globe" : "i-lock"}"/></svg>
-          <span class="book-card-share-label">Public</span>
-        </button>
-        <button class="book-card-del" data-id="${b.id}" aria-label="Remove ${escapeHtml(b.title)}" title="Remove from library">
+        ${owned ? shareToggleHtml(b) : ""}
+        <button class="book-card-del" data-id="${b.id}" aria-label="Remove ${escapeHtml(b.title)}" title="${owned ? "Remove from library" : "Remove from My books (it stays in the public library)"}">
           <svg width="14" height="14" aria-hidden="true"><use href="#i-trash"/></svg>
         </button>
       </div>
@@ -456,7 +464,9 @@ function renderLibrary() {
       const id = Number(btn.dataset.id);
       const book = state.books.find((b) => b.id === id);
       if (!book) return;
-      const ok = confirm(`Remove "${book.title}" from your library? The file will be deleted.`);
+      const ok = confirm(isOwned(book)
+        ? `Remove "${book.title}" from your library? The file will be deleted${book.visibility === "public" ? " and it leaves the public library" : ""}.`
+        : `Remove "${book.title}" from My books? It stays in the public library.`);
       if (!ok) return;
       try {
         if (id === state.currentBookId) await unloadBook();
@@ -472,6 +482,19 @@ function renderLibrary() {
   });
 }
 
+// Books from /api/books are yours unless saved from the public library.
+const isOwned = (b) => b.owned !== false;
+
+// The Share / Public pill on your own covers. Labelled both ways, so the
+// way to share is visible before anything is public.
+function shareToggleHtml(b) {
+  const on = b.visibility === "public";
+  return `<button class="book-card-share" data-id="${b.id}" aria-pressed="${on}" aria-label="${on ? `Unshare ${escapeHtml(b.title)}` : `Share ${escapeHtml(b.title)} in the public library`}" title="${on ? "In the public library: anyone signed in can listen. Tap to unshare." : "Only you can see it. Tap to share it in the public library."}">
+    <svg width="14" height="14" aria-hidden="true"><use href="#${on ? "i-globe" : "i-lock"}"/></svg>
+    <span class="book-card-share-label">${on ? "Public" : "Share"}</span>
+  </button>`;
+}
+
 // Toggle a book's visibility. Optimistic: flip the local state and re-render
 // immediately, then revert on error.
 async function setBookVisibility(id, visibility) {
@@ -482,6 +505,7 @@ async function setBookVisibility(id, visibility) {
   book.visibility = visibility;
   book.shared_at = visibility === "public" ? Date.now() : null;
   renderLibrary();
+  renderShareList();
   try {
     const res = await api(`/api/books/${id}/visibility`, {
       method: "POST",
@@ -494,14 +518,16 @@ async function setBookVisibility(id, visibility) {
     setStatus(
       visibility === "public"
         ? `Shared "${book.title}" with the public library`
-        : `Made "${book.title}" private`,
+        : `Took "${book.title}" out of the public library`,
       "ok"
     );
+    if (state.screen === "public") loadPublicLibrary();
   } catch (err) {
     // Revert on failure.
     book.visibility = prevVisibility;
     book.shared_at = prevSharedAt;
     renderLibrary();
+    renderShareList();
     throw err;
   }
 }
@@ -622,6 +648,8 @@ els.filePicker.addEventListener("change", (e) => {
 });
 
 // ----- Public library -----
+// See PUBLIC_LIBRARY.md. Anyone signed in can listen to a shared book or
+// save it to My books; the owner shares and unshares.
 async function loadPublicLibrary() {
   try {
     const { books } = await api("/api/public-books");
@@ -632,33 +660,96 @@ async function loadPublicLibrary() {
   }
 }
 
+function filteredPublicBooks() {
+  const q = (els.publicSearch.value || "").trim().toLowerCase();
+  if (!q) return state.publicBooks;
+  return state.publicBooks.filter((b) => `${b.title} ${b.author || ""} ${b.shared_by || ""}`.toLowerCase().includes(q));
+}
+
+function publicActionHtml(b) {
+  if (b.mine) return shareToggleHtml({ ...b, visibility: "public" });
+  return `<button class="book-card-save" data-id="${b.id}" aria-pressed="${b.saved}" aria-label="${b.saved ? `Remove ${escapeHtml(b.title)} from My books` : `Save ${escapeHtml(b.title)} to My books`}" title="${b.saved ? "On your shelf. Tap to remove it from My books." : "Keep it in My books"}">
+    <svg width="14" height="14" aria-hidden="true"><use href="#${b.saved ? "i-check" : "i-plus"}"/></svg>
+    <span>${b.saved ? "Saved" : "Save"}</span>
+  </button>`;
+}
+
 function renderPublicLibrary() {
   if (!els.publicGrid) return;
+  const n = state.publicBooks.length;
+  els.publicEyebrow.textContent = n ? `Public library \u00b7 ${n} ${n === 1 ? "book" : "books"}` : "Public library";
   els.publicGrid.innerHTML = "";
-  els.publicEmpty.hidden = state.publicBooks.length > 0;
-  if (state.publicBooks.length === 0) return;
-  for (const b of state.publicBooks) {
+  els.publicEmpty.hidden = n > 0;
+  const shown = filteredPublicBooks();
+  els.publicSearchEmpty.hidden = !(n && shown.length === 0);
+  for (const b of shown) {
     const li = document.createElement("li");
-    li.className = "book-card";
+    li.className = "book-card" + (b.id === state.currentBookId ? " book-card-playing" : "");
     li.dataset.id = String(b.id);
+    const pct = bookPercent(b);
+    const who = b.mine ? "you" : escapeHtml(b.shared_by || "a reader");
+    const extra = [b.free ? `<span class="badge badge-src">Free book</span>` : "", b.saves ? `<span>${b.saves} saved</span>` : ""].filter(Boolean).join("");
     li.innerHTML = `
       <button class="book-card-open" data-id="${b.id}" aria-label="Open ${escapeHtml(b.title)}">
         ${coverHtml(b)}
         <div class="book-card-body">
           <h3 class="book-card-title">${escapeHtml(b.title)}</h3>
           ${b.author ? `<p class="book-card-author">${escapeHtml(b.author)}</p>` : ""}
-          <p class="book-card-meta">Shared by <span class="book-card-sharedby">${escapeHtml(b.shared_by || "")}</span></p>
+          <p class="book-card-meta">Shared by <span class="book-card-sharedby">${who}</span></p>
+          ${b.progress_page || b.id === state.currentBookId ? `<p class="book-card-meta">${bookMetaHtml(b)}</p>` : ""}
+          ${extra ? `<p class="book-card-meta book-card-tags">${extra}</p>` : ""}
+          ${pct != null ? `<div class="progress" aria-hidden="true"><span style="width:${pct}%"></span></div>` : ""}
         </div>
       </button>
+      <div class="book-card-actions">${publicActionHtml(b)}</div>
     `;
     els.publicGrid.appendChild(li);
   }
   els.publicGrid.querySelectorAll(".book-card-open").forEach((btn) => {
-    btn.addEventListener("click", () => {
+    btn.addEventListener("click", () => openBookFromPublicLibrary(Number(btn.dataset.id)));
+  });
+  els.publicGrid.querySelectorAll(".book-card-save").forEach((btn) => {
+    btn.addEventListener("click", (e) => { e.stopPropagation(); toggleSaved(Number(btn.dataset.id)); });
+  });
+  els.publicGrid.querySelectorAll(".book-card-share").forEach((btn) => {
+    btn.addEventListener("click", async (e) => {
+      e.stopPropagation();
       const id = Number(btn.dataset.id);
-      openBookFromPublicLibrary(id);
+      const pub = state.publicBooks.find((b) => b.id === id);
+      if (!pub || !confirm(`Take "${pub.title}" out of the public library? It stays on your shelf.`)) return;
+      try {
+        if (state.books.some((b) => b.id === id)) await setBookVisibility(id, "private");
+        else {
+          await api(`/api/books/${id}/visibility`, { method: "POST", body: JSON.stringify({ visibility: "private" }) });
+          setStatus(`Took "${pub.title}" out of the public library`, "ok");
+          loadPublicLibrary();
+        }
+      } catch (err) {
+        setStatus(`Could not unshare: ${err.message}`, "err");
+      }
     });
   });
+}
+els.publicSearch.addEventListener("input", () => renderPublicLibrary());
+
+// Save a shared book to My books, or take it off again. Optimistic.
+async function toggleSaved(id) {
+  const b = state.publicBooks.find((x) => x.id === id);
+  if (!b || b.mine) return;
+  const save = !b.saved;
+  b.saved = save;
+  b.saves = Math.max(0, (b.saves || 0) + (save ? 1 : -1));
+  renderPublicLibrary();
+  try {
+    await api(`/api/public-books/${id}/save`, { method: save ? "POST" : "DELETE" });
+    setStatus(save ? `Saved "${b.title}" to My books` : `Removed "${b.title}" from My books`, "ok");
+    loadLibrary();
+  } catch (err) {
+    b.saved = !save;
+    b.saves = Math.max(0, (b.saves || 0) + (save ? -1 : 1));
+    renderPublicLibrary();
+    setStatus(`Could not ${save ? "save" : "remove"} it: ${err.message}`, "err");
+  }
 }
 
 async function openBookFromPublicLibrary(id) {
@@ -667,6 +758,9 @@ async function openBookFromPublicLibrary(id) {
     setStatus("Book not found in public library", "err");
     return;
   }
+  // Yours or saved: open it as a shelf book so Continue listening and
+  // "last opened" follow it.
+  if (state.books.some((b) => b.id === id)) return openBookFromLibrary(id);
   if (state.currentBookId === id && state.pdfDoc) {
     showScreen("reader");
     return;
@@ -691,6 +785,51 @@ async function openBookFromPublicLibrary(id) {
   }
 }
 
+// Share a book: every book you own, each with a Share / Shared toggle.
+function renderShareList() {
+  if (!els.shareList || !els.shareDialog.open) return;
+  const mine = state.books.filter(isOwned)
+    .sort((a, b) => (a.visibility === b.visibility ? 0 : a.visibility === "public" ? 1 : -1) || a.title.localeCompare(b.title, undefined, { sensitivity: "base" }));
+  els.shareListEmpty.hidden = mine.length > 0;
+  els.shareList.innerHTML = mine.map((b) => {
+    const on = b.visibility === "public";
+    return `<li class="share-row">
+      <div class="share-cover">${coverHtml(b)}</div>
+      <div class="share-body">
+        <p class="share-title">${escapeHtml(b.title)}</p>
+        <p class="share-meta">${b.author ? escapeHtml(b.author) : b.kind.toUpperCase()}${b.source ? ` <span class="badge badge-src">Free book</span>` : ""}</p>
+      </div>
+      <button type="button" class="btn ${on ? "btn-ghost" : "btn-primary"} share-toggle" data-id="${b.id}" aria-pressed="${on}" aria-label="${on ? `Unshare ${escapeHtml(b.title)}` : `Share ${escapeHtml(b.title)}`}">
+        <svg width="16" height="16" aria-hidden="true"><use href="#${on ? "i-check" : "i-globe"}"/></svg>
+        <span>${on ? "Shared" : "Share"}</span>
+      </button>
+    </li>`;
+  }).join("");
+  els.shareList.querySelectorAll(".share-toggle").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const id = Number(btn.dataset.id);
+      const b = state.books.find((x) => x.id === id);
+      if (!b) return;
+      try {
+        await setBookVisibility(id, b.visibility === "public" ? "private" : "public");
+      } catch (err) {
+        setStatus(`Could not change sharing: ${err.message}`, "err");
+      }
+    });
+  });
+}
+async function openShareDialog() {
+  if (typeof els.shareDialog.showModal === "function") els.shareDialog.showModal();
+  else els.shareDialog.setAttribute("open", "");
+  renderShareList();
+  // Pick up books added in another tab or from Find books.
+  try { state.books = (await api("/api/books")).books; renderShareList(); } catch (_) { /* keep what we have */ }
+}
+els.shareBookBtn.addEventListener("click", openShareDialog);
+els.shareFromEmpty.addEventListener("click", openShareDialog);
+els.shareFindBtn.addEventListener("click", () => els.shareDialog.close());
+els.shareDialog.addEventListener("click", (e) => { if (e.target === els.shareDialog) els.shareDialog.close(); });
+
 if (els.browsePublicBtn) {
   els.browsePublicBtn.addEventListener("click", async () => {
     showScreen("public");
@@ -700,6 +839,7 @@ if (els.browsePublicBtn) {
 if (els.backFromPublic) {
   els.backFromPublic.addEventListener("click", async () => {
     showScreen("library");
+    renderLibrary();
   });
 }
 
