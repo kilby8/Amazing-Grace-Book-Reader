@@ -44,6 +44,8 @@ if (LIVE) {
     ["pride and prejudice", /pride and prejudice/i, /austen/i],
     ["pilgrim's progress", /pilgrim/i, /bunyan/i],
     ["spurgeon", /./, /spurgeon/i],
+    ["pilgrims progress", /pilgrim/i, /bunyan/i],
+    ["amazing grace newton", /./, /newton/i],
     ["john newton", /./, /newton/i],
     ["sherlock holmes", /sherlock|holmes/i, /doyle/i],
   ];
@@ -107,7 +109,13 @@ if (LIVE) {
   await f.search('moby" OR collection:inlibrary) OR (title:*');
   const iaUrl = fx.seen.find((u) => u.includes("advancedsearch"));
   const q = iaUrl ? new URL(iaUrl).searchParams.get("q") : "";
-  check("user text can't add search syntax to the IA query", q && !/collection:inlibrary\)|title:\*/.test(q.replace(/NOT collection:inlibrary/, "")) && q.startsWith("(title:(moby collection inlibrary title)"), q);
+  check("user text can't add search syntax to the IA query", q && !/collection:inlibrary\)|title:\*/.test(q.replace(/NOT collection:inlibrary/, "")) && q.startsWith("((title:moby OR creator:moby) AND (title:collection OR creator:collection) AND"), q);
+
+  fx.seen.length = 0;
+  const pil = await f.search("pilgrims progress");
+  check("\"pilgrims\" finds \"Pilgrim's\" and ranks it first", pil.results[0] && pil.results[0].id === "gutenberg:131" && pil.results[0].title === "The Pilgrim's Progress from this world to that which is to come", titles(pil.results));
+  const pq = new URL(fx.seen.find((u) => u.includes("advancedsearch"))).searchParams.get("q");
+  check("each word may be in the title or the author, plurals too", pq.startsWith("((title:pilgrims OR creator:pilgrims OR title:pilgrim OR creator:pilgrim) AND (title:progress OR creator:progress))"), pq);
 
   check("short queries don't search", (await f.search("a")).results.length === 0);
   check("tidyAuthor", tidyAuthor("Austen, Jane, 1775-1817") === "Jane Austen" && tidyAuthor(["Twain, Mark"]) === "Mark Twain" && tidyAuthor("Unknown") === "Unknown");

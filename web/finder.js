@@ -48,6 +48,7 @@ function words(s) {
   return String(s || "")
     .toLowerCase()
     .normalize("NFKD")
+    .replace(/['\u2019]/g, "") // "Pilgrim's" is one word, "pilgrims"
     .replace(/[̀-ͯ]/g, "")
     .split(/[^a-z0-9]+/)
     .filter(Boolean);
@@ -56,10 +57,13 @@ function words(s) {
 const STOP = new Set(["the", "a", "an", "of", "and", "or", "by", "in", "to"]);
 
 // How well a result's title and author cover the query, 0..1.
+// Plurals and possessives match their stem: "pilgrims" ~ "pilgrim's".
+const stem = (w) => (w.length > 3 && /[^s]s$/.test(w) ? w.slice(0, -1) : w);
+
 function matchScore(query, title, author) {
-  const q = words(query).filter((w) => !STOP.has(w));
+  const q = words(query).filter((w) => !STOP.has(w)).map(stem);
   if (q.length === 0) return 0;
-  const have = new Set([...words(title), ...words(author)]);
+  const have = new Set([...words(title), ...words(author)].map(stem));
   return q.filter((w) => have.has(w)).length / q.length;
 }
 
@@ -162,9 +166,15 @@ function createFinder({ fetchImpl = globalThis.fetch, maxBytes = 50 * 1024 * 102
   }
 
   // ----- Internet Archive -----
+  // Every word must be in the title or the author ("amazing grace
+  // newton"). Words only: no search syntax from the user reaches the query.
   function iaTerms(q) {
-    // Keep words only: no Lucene syntax from the user reaches the query.
-    return words(q).filter((w) => !STOP.has(w) || words(q).length === 1).slice(0, 12).join(" ");
+    const all = words(q);
+    const keep = all.filter((w) => !STOP.has(w) || all.length === 1).slice(0, 8);
+    return keep.map((w) => {
+      const forms = stem(w) === w ? [w] : [w, stem(w)];
+      return `(${forms.map((f) => `title:${f} OR creator:${f}`).join(" OR ")})`;
+    }).join(" AND ");
   }
 
   async function iaFiles(identifier) {
@@ -199,7 +209,7 @@ function createFinder({ fetchImpl = globalThis.fetch, maxBytes = 50 * 1024 * 102
     const terms = iaTerms(q);
     if (!terms) return [];
     const query = [
-      `(title:(${terms}) OR creator:(${terms}))`,
+      `(${terms})`,
       "mediatype:texts",
       "(format:pdf OR format:epub)",
       ...IA_LENDING.map((c) => `NOT collection:${c}`),

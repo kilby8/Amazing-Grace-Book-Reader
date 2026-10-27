@@ -136,6 +136,10 @@ const IA_ITEMS = {
   },
 };
 
+// A scan with a big download count and a near-miss title.
+const PILGRIM_DOC = { identifier: "innocentsabroad00twai", title: "The innocents abroad, or, The new pilgrims' progress", creator: "Twain, Mark, 1835-1910", downloads: 90000 };
+IA_ITEMS.innocentsabroad00twai = { doc: PILGRIM_DOC, metadata: { collection: ["americana"] }, files: [{ name: "innocentsabroad00twai.pdf", format: "Text PDF", size: "44560171" }] };
+
 const seen = []; // every URL fakeFetch was asked for
 
 function json(body, status = 200) {
@@ -163,6 +167,9 @@ async function fakeFetch(input, opts = {}) {
           opdsEntry(21816, "The Confidence-Man: His Masquerade", "Herman Melville"),
         ]), { headers: { "Content-Type": "application/atom+xml" } });
       }
+      if (q.includes("pilgrim")) {
+        return new Response(opds([opdsEntry(131, "The Pilgrim&#x27;s Progress from this world to that which is to come", "John Bunyan")]), { headers: { "Content-Type": "application/atom+xml" } });
+      }
       return new Response(opds([]), { headers: { "Content-Type": "application/atom+xml" } });
     }
     let m = /^\/ebooks\/(\d+)\.epub3\.images$/.exec(url.pathname);
@@ -178,7 +185,8 @@ async function fakeFetch(input, opts = {}) {
   if (host === "archive.org") {
     if (url.pathname === "/advancedsearch.php") {
       const q = url.searchParams.get("q") || "";
-      const docs = /moby|whale|boom/i.test(q) ? Object.values(IA_ITEMS).map((i) => i.doc) : [];
+      const docs = /moby|whale|boom/i.test(q) ? Object.values(IA_ITEMS).map((i) => i.doc)
+        : /pilgrim/i.test(q) ? [PILGRIM_DOC] : [];
       return json({ responseHeader: { status: 0 }, response: { numFound: docs.length, start: 0, docs } });
     }
     let m = /^\/metadata\/([^/]+)$/.exec(url.pathname);
