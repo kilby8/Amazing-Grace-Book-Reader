@@ -31,6 +31,7 @@ const rateLimit = require("express-rate-limit");
 const { query, queryOne, closeDb } = require("./db");
 const { DbSessionStore } = require("./session-store");
 const storage = require("./storage");
+const { createFinder } = require("./finder");
 const {
   createUser,
   verifyUser,
@@ -116,7 +117,8 @@ app.use(
           "'unsafe-inline'",
         ],
         fontSrc: ["'self'", "https://fonts.gstatic.com", "data:"],
-        imgSrc: ["'self'", "data:", "blob:"],
+        // Book finder covers come from the sources themselves.
+        imgSrc: ["'self'", "data:", "blob:", "https://www.gutenberg.org", "https://archive.org", "https://*.archive.org"],
         connectSrc: [
           "'self'",
           "http://127.0.0.1:*",
@@ -172,6 +174,23 @@ const ttsLimiter = rateLimit({
   standardHeaders: "draft-7",
   legacyHeaders: false,
   message: { error: "TTS rate limit hit, slow down." },
+});
+
+// Book finder: searches are cheap but hit outside services; adds download
+// a whole book, so they get a tighter cap.
+const finderSearchLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 30,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Too many searches, slow down." },
+});
+const finderAddLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Too many books at once, try again in a minute." },
 });
 
 // ----- Multer setup (local storage only): per-user destination, sanitized filename -----
@@ -460,6 +479,52 @@ app.get("/api/books/:id/file", requireAuth, wrap(async (req, res) => {
   await markOpened(book, req.session.userId);
   res.setHeader("Content-Type", book.kind === "pdf" ? "application/pdf" : "application/epub+zip");
   fs.createReadStream(resolved).pipe(res);
+}));
+
+// ----- Book finder -----
+// Search free, legal sources (Project Gutenberg, Internet Archive) and add a
+// result to the library. The server downloads the file itself: the browser
+// only names a result id, and serverless hosts cap bodies at 4.5 MB anyway.
+// See FINDER.md.
+const finder = createFinder({ maxBytes: 50 * 1024 * 1024 });
+
+app.get("/api/finder/search", requireAuth, finderSearchLimiter, wrap(async (req, res) => {
+  const q = String(req.query.q || "");
+  if (q.trim().length < 2) return res.status(400).json({ error: "Type at least 2 letters" });
+  res.json(await finder.search(q));
+}));
+
+app.post("/api/finder/add", requireAuth, finderAddLimiter, wrap(async (req, res) => {
+  const { id, title, author } = req.body || {};
+  let file;
+  try {
+    file = await finder.download(String(id || ""));
+  } catch (e) {
+    const status = e.status || (e.name === "TimeoutError" ? 504 : 502);
+    const msg = e.name === "TimeoutError" ? "The book took too long to download, try again" : e.message;
+    return res.status(status).json({ error: msg });
+  }
+  const cleanTitle = String(title || "").replace(/\s+/g, " ").trim().slice(0, 200) || "Untitled";
+  const cleanAuthor = String(author || "").replace(/\s+/g, " ").trim().slice(0, 200) || null;
+  const name = `${cleanTitle}.${file.kind}`;
+  let filename;
+  if (storage.MODE === "local") {
+    const userDir = path.join(BOOKS_DIR, String(req.session.userId));
+    fs.mkdirSync(userDir, { recursive: true });
+    filename = `${Date.now()}-${storage.safeFilename(name)}`;
+    fs.writeFileSync(path.join(userDir, filename), file.buffer);
+  } else {
+    const type = file.kind === "pdf" ? "application/pdf" : "application/epub+zip";
+    filename = await storage.putObject(req.session.userId, name, file.buffer, type);
+  }
+  const book = await insertBook(req.session.userId, {
+    title: cleanTitle,
+    author: cleanAuthor,
+    kind: file.kind,
+    filename,
+    size: file.buffer.length,
+  });
+  res.json({ book });
 }));
 
 // ----- Reading progress -----

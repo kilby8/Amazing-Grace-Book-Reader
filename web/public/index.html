@@ -161,6 +161,7 @@
       <div class="lib-toolbar">
         <div class="seg" role="tablist" aria-label="Which library">
           <button type="button" class="seg-btn seg-btn-active" role="tab" aria-selected="true" id="tabMine">My books</button>
+          <button type="button" class="seg-btn" role="tab" aria-selected="false" id="findBooksBtn" data-go="find">Find books</button>
           <button type="button" class="seg-btn" role="tab" aria-selected="false" id="browsePublicBtn">Public library</button>
         </div>
         <div class="lib-filters">
@@ -179,7 +180,13 @@
       </div>
 
       <ul id="bookGrid" class="cover-grid" aria-live="polite"></ul>
-      <p id="librarySearchEmpty" class="muted center" hidden>No books match that search.</p>
+      <div id="librarySearchEmpty" class="search-empty" hidden>
+        <p class="muted">No books on your shelf match that search.</p>
+        <button id="findFromLibrary" type="button" class="btn btn-ghost">
+          <svg width="18" height="18" aria-hidden="true"><use href="#i-search"/></svg>
+          <span id="findFromLibraryLabel">Search free books</span>
+        </button>
+      </div>
 
       <section id="drop" class="drop" tabindex="0" role="button" aria-label="Add a book: drop a PDF or EPUB here, or press to choose a file">
         <svg class="drop-icon" width="34" height="34" aria-hidden="true"><use href="#i-upload"/></svg>
@@ -193,6 +200,49 @@
         <svg class="book-illustration" aria-hidden="true"><use href="#open-book"/></svg>
         <p class="library-empty-title">Your shelf is empty</p>
         <p class="muted">Add a PDF or EPUB and it will read to you.</p>
+        <button id="findFromEmpty" type="button" class="btn btn-primary" data-go="find">
+          <svg width="18" height="18" aria-hidden="true"><use href="#i-search"/></svg>
+          <span>Find free books</span>
+        </button>
+      </div>
+    </section>
+
+    <!-- ============== FIND BOOKS ============== -->
+    <section id="findScreen" class="screen library" aria-label="Find books" hidden>
+      <div class="library-head">
+        <div>
+          <p class="eyebrow">Find books</p>
+          <h2 class="library-greeting">Free books from the web</h2>
+        </div>
+      </div>
+      <div class="lib-toolbar">
+        <div class="seg" role="tablist" aria-label="Which library">
+          <button type="button" class="seg-btn" role="tab" aria-selected="false" data-go="library">My books</button>
+          <button type="button" class="seg-btn seg-btn-active" role="tab" aria-selected="true">Find books</button>
+          <button type="button" class="seg-btn" role="tab" aria-selected="false" data-go="public">Public library</button>
+        </div>
+      </div>
+      <form id="finderForm" class="finder-form" role="search">
+        <label class="search search-big">
+          <svg width="22" height="22" aria-hidden="true"><use href="#i-search"/></svg>
+          <input id="finderInput" type="search" placeholder="Title or author, e.g. Pilgrim's Progress" aria-label="Search free books by title or author" autocomplete="off" enterkeyhint="search" maxlength="120" />
+        </label>
+        <button id="finderGo" type="submit" class="btn btn-primary btn-large">Search</button>
+      </form>
+      <p class="finder-note muted">Public-domain books from Project Gutenberg and the Internet Archive. Free to read and keep.</p>
+      <p id="finderStatus" class="finder-status muted" role="status" aria-live="polite"></p>
+      <ul id="finderResults" class="finder-results" aria-label="Search results"></ul>
+      <div id="finderIdle" class="library-empty finder-idle">
+        <svg class="book-illustration" aria-hidden="true"><use href="#open-book"/></svg>
+        <p class="library-empty-title">Search for a book</p>
+        <p class="muted">Try a title, an author, or a few words of both.</p>
+        <div class="finder-suggest" id="finderSuggest">
+          <button type="button" class="chip" data-q="Amazing Grace John Newton">John Newton</button>
+          <button type="button" class="chip" data-q="Pilgrim's Progress">Pilgrim's Progress</button>
+          <button type="button" class="chip" data-q="Charles Spurgeon">Spurgeon</button>
+          <button type="button" class="chip" data-q="Jane Austen">Jane Austen</button>
+          <button type="button" class="chip" data-q="Sherlock Holmes">Sherlock Holmes</button>
+        </div>
       </div>
     </section>
 
@@ -207,6 +257,7 @@
       <div class="lib-toolbar">
         <div class="seg" role="tablist" aria-label="Which library">
           <button type="button" class="seg-btn" role="tab" aria-selected="false" id="backFromPublic">My books</button>
+          <button type="button" class="seg-btn" role="tab" aria-selected="false" data-go="find">Find books</button>
           <button type="button" class="seg-btn seg-btn-active" role="tab" aria-selected="true">Public library</button>
         </div>
       </div>

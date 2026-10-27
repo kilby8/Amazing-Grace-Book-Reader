@@ -522,6 +522,66 @@ img { display: block; max-width: 100%; }
 .library-empty-title { font-family: var(--font-display); font-size: var(--text-xl); font-weight: 600; }
 .book-illustration { width: 140px; height: 94px; color: var(--color-accent); }
 
+/* =========================================================================
+   Find books: search free sources, add in one tap
+   ========================================================================= */
+
+.search-empty { display: grid; justify-items: center; gap: var(--space-2); margin: 0 0 var(--space-5); text-align: center; }
+.finder-form { display: flex; gap: var(--space-2); margin-bottom: var(--space-2); }
+.search-big { max-width: none; min-height: 52px; padding: 0 var(--space-4); }
+.search-big input { font-size: var(--text-lg); }
+.finder-note { font-size: var(--text-sm); margin-bottom: var(--space-4); }
+.finder-status { min-height: 1.4em; font-size: var(--text-sm); margin-bottom: var(--space-3); }
+.finder-status[data-state="err"] { color: var(--color-err); }
+.finder-idle { padding-top: var(--space-5); }
+.finder-suggest { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); margin-top: var(--space-3); }
+
+.finder-results { list-style: none; margin: 0 0 var(--space-6); padding: 0; display: grid; gap: var(--space-3); }
+.finder-row {
+  display: grid; grid-template-columns: 64px 1fr auto; gap: var(--space-4); align-items: center;
+  padding: var(--space-3) var(--space-4) var(--space-3) var(--space-3);
+  border: 1px solid var(--color-line); border-radius: var(--radius-lg);
+  background: var(--color-bg-elev);
+}
+.finder-row.finder-skeleton { min-height: 120px; background: linear-gradient(90deg, var(--color-bg-elev), var(--color-bg-sunk), var(--color-bg-elev)); background-size: 200% 100%; animation: finder-shimmer 1.2s linear infinite; }
+@keyframes finder-shimmer { to { background-position: -200% 0; } }
+@media (prefers-reduced-motion: reduce) { .finder-row.finder-skeleton { animation: none; } }
+.finder-cover { width: 64px; }
+.finder-cover .cover { padding: 10% 9%; }
+.finder-cover .cover-title { font-size: 9px; }
+.finder-cover .cover-kind, .finder-cover .cover-author { display: none; }
+.finder-cover .cover-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.finder-body { display: grid; gap: 3px; min-width: 0; }
+.finder-title {
+  font-family: var(--font-display); font-size: var(--text-lg); font-weight: 600; line-height: 1.2;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.finder-author { font-size: var(--text-sm); color: var(--color-fg-muted); }
+.finder-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--color-fg-subtle); }
+.finder-meta a { color: inherit; }
+.badge {
+  display: inline-flex; align-items: center; height: 20px; padding: 0 7px;
+  border-radius: var(--radius-pill); background: var(--color-bg-sunk); color: var(--color-fg-muted);
+  font: 700 10px/1 var(--font-ui); letter-spacing: 0.04em; text-transform: uppercase;
+}
+.badge-src { background: var(--color-accent-soft); color: var(--color-accent); text-transform: none; letter-spacing: 0; font-weight: 600; font-size: 11px; }
+.finder-add { min-width: 96px; }
+.finder-add[data-state="busy"] { pointer-events: none; }
+.finder-add[data-state="done"] { background: var(--color-bg-elev); border-color: var(--color-line-strong); color: var(--color-fg); }
+.spinner {
+  width: 16px; height: 16px; border-radius: 50%;
+  border: 2px solid currentColor; border-right-color: transparent;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (max-width: 640px) {
+  .finder-form .btn { padding: 0 var(--space-4); }
+  .finder-row { grid-template-columns: 56px 1fr; gap: var(--space-3); padding: var(--space-3); }
+  .finder-cover { width: 56px; grid-row: span 2; }
+  .finder-add { justify-self: start; grid-column: 2; min-height: 40px; }
+  .finder-title { font-size: var(--text-base); }
+}
+
 .drop-overlay {
   position: fixed; inset: 0; z-index: 80; display: grid; place-items: center;
   background: color-mix(in oklch, var(--color-bg) 80%, transparent);
