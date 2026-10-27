@@ -96,6 +96,11 @@ const IA_ITEMS = {
       { name: "mobydickorwhale01melvuoft.pdf", format: "Text PDF", size: "29450706" },
     ],
   },
+  mobydickorwhale02melvuoft: {
+    doc: { identifier: "mobydickorwhale02melvuoft", title: "Moby-Dick; or, The whale", creator: "Melville, Herman, 1819-1891", year: "1922", downloads: 60000, volume: "2" },
+    metadata: { title: "Moby-Dick; or, The whale", collection: ["robarts", "toronto"] },
+    files: [{ name: "mobydickorwhale02melvuoft.pdf", format: "Text PDF", size: "30554694" }],
+  },
   mobydick00melv_1: {
     doc: { identifier: "mobydick00melv_1", title: "Moby Dick;", creator: "Melville, Herman, 1819-1891", year: "1851", downloads: 32321 },
     metadata: { title: "Moby Dick;", collection: ["americana"] },

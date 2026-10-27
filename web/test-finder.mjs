@@ -86,6 +86,7 @@ if (LIVE) {
   check("very long catalogue titles keep their main part", res.results.some((r) => r.title === "The treasury of David, Volume 1 (of 6), Psalm 1-26"), titles(res.results));
   check("XML entities are decoded", res.results.some((r) => r.title === "Moby-Dick & Other Tales"));
   check("several scans of one book collapse to the most downloaded", !ids.includes("ia:mobydick00melv_1"), titles(res.results));
+  check("a second volume stays as its own result", res.results.some((r) => r.id === "ia:mobydickorwhale02melvuoft" && r.title === "Moby-Dick; or, The whale, Volume 2"), titles(res.results));
   check("borrow-only Internet Archive books are dropped", !ids.includes("ia:mobydicklending0000melv"));
   const ia = res.results.find((r) => r.id === "ia:mobydickorwhale01melvuoft");
   check("IA result is the text PDF with its size", ia && ia.kind === "pdf" && ia.size === 29450706, JSON.stringify(ia));

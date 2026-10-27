@@ -39,11 +39,14 @@ Internet Archive items). Nothing from shadow libraries.
   writes to Supabase Storage (same ticket mechanism as browser uploads).
 - `server.js`: `GET /api/finder/search?q=`, `POST /api/finder/add {id}`,
   CSP `img-src` gains the two cover hosts.
-- `vercel.json`: same CSP change.
+- `vercel.json`: same CSP change. The live site's deploy kit has its own
+  `vercel.json`, which needs the same `img-src` and `finder.js` in
+  `includeFiles`.
 - `public/index.html`, `public/app.js`, `public/styles.css`: a "Find books"
   tab and screen.
-- `test-finder.mjs` (new): unit tests with recorded source responses,
-  plus `--live` mode that hits the real sources.
+- `test-finder.mjs`, `test-finder-fixtures.cjs` (new): tests against
+  recorded source answers (finder, API and browser), plus `--live` mode
+  that asks the real sources.
 
 ## Data model
 
@@ -73,10 +76,13 @@ author come from the source, so the library shows them properly).
 ## Flow
 
 Search runs both sources in parallel, each with a 9 s timeout. Results are
-interleaved by score (title/author match, then popularity), with
-duplicates dropped (same title and author, Gutenberg preferred because its
-text is cleaner). A source that fails is reported as `failed` in the
-response, and the rest still show.
+ordered by how well title and author match the query, then each source's
+own popularity order, with Gutenberg winning ties because its proofread
+text reads better aloud than a scan's OCR. Within a source, repeat
+editions of one book collapse to the most popular one (separate volumes
+stay separate). The same book can appear once from each source, so the
+reader can pick the EPUB or the scanned PDF. A source that fails is
+reported with `ok: false` in the response, and the rest still show.
 
 Add: the server downloads the file (Vercel caps request/response bodies at
 4.5 MB, so it can't round-trip through the browser), writes it to storage,

@@ -206,7 +206,7 @@ function createFinder({ fetchImpl = globalThis.fetch, maxBytes = 50 * 1024 * 102
       "NOT access-restricted-item:true",
     ].join(" AND ");
     const params = new URLSearchParams({ q: query, rows: "40", output: "json" });
-    for (const f of ["identifier", "title", "creator", "year", "date", "downloads"]) params.append("fl[]", f);
+    for (const f of ["identifier", "title", "creator", "year", "date", "downloads", "volume"]) params.append("fl[]", f);
     const j = await (await get(`https://archive.org/advancedsearch.php?${params}`)).json();
     const docs = (j.response && j.response.docs) || [];
     // Several scans of one book are common; keep the most downloaded.
@@ -215,9 +215,11 @@ function createFinder({ fetchImpl = globalThis.fetch, maxBytes = 50 * 1024 * 102
     const out = [];
     for (const d of docs) {
       if (!d.identifier || !ID_PATTERNS.ia.test(d.identifier)) continue;
-      const title = tidyTitle(d.title);
+      // Multi-volume scans share a title; keep the volumes apart.
+      const vol = String(Array.isArray(d.volume) ? d.volume[0] : d.volume || "").replace(/^v(ol)?\.?\s*/i, "").trim();
+      const title = tidyTitle(d.title) + (vol && vol.length < 12 ? `, Volume ${vol}` : "");
       const author = tidyAuthor(d.creator);
-      const k = bookKey(title, author);
+      const k = `${bookKey(title, author)}|${vol}`;
       if (seen.has(k)) continue;
       seen.add(k);
       const year = Number(d.year) || Number(String(d.date || "").slice(0, 4)) || null;
