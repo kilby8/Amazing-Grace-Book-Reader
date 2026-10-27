@@ -9,7 +9,9 @@
 
 const USER_AGENT = "AmazingGraceReader/1.0 (book finder; +https://amazing-grace-reader.vercel.app)";
 const SEARCH_TIMEOUT_MS = 9000;
-const META_TIMEOUT_MS = 4000;
+const META_TIMEOUT_MS = 8000;
+// Search waits this long for format/size details, then shows what it has.
+const SEARCH_META_MS = 2000;
 const DOWNLOAD_TIMEOUT_MS = 45000;
 const CACHE_MS = 10 * 60 * 1000;
 const CACHE_MAX = 100;
@@ -177,8 +179,8 @@ function createFinder({ fetchImpl = globalThis.fetch, maxBytes = 50 * 1024 * 102
     }).join(" AND ");
   }
 
-  async function iaFiles(identifier) {
-    const res = await get(`https://archive.org/metadata/${encodeURIComponent(identifier)}`, { timeout: META_TIMEOUT_MS });
+  async function iaFiles(identifier, timeout = META_TIMEOUT_MS) {
+    const res = await get(`https://archive.org/metadata/${encodeURIComponent(identifier)}`, { timeout });
     const j = await res.json();
     if (!j || !j.metadata) throw new Error("Internet Archive item not found");
     const md = j.metadata;
@@ -253,7 +255,7 @@ function createFinder({ fetchImpl = globalThis.fetch, maxBytes = 50 * 1024 * 102
     // turn out to be unavailable are dropped; a slow answer keeps "PDF".
     await Promise.all(out.slice(0, 8).map(async (r) => {
       try {
-        const f = await iaFiles(r.id.slice(3));
+        const f = await iaFiles(r.id.slice(3), SEARCH_META_MS);
         r.kind = f.kind;
         r.size = f.size;
       } catch (e) {
