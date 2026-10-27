@@ -100,6 +100,15 @@ const els = {
   librarySearch: $("librarySearch"),
   librarySort: $("librarySort"),
   librarySearchEmpty: $("librarySearchEmpty"),
+  findFromLibrary: $("findFromLibrary"),
+  findFromLibraryLabel: $("findFromLibraryLabel"),
+  // Find books
+  findScreen: $("findScreen"),
+  finderForm: $("finderForm"),
+  finderInput: $("finderInput"),
+  finderStatus: $("finderStatus"),
+  finderResults: $("finderResults"),
+  finderIdle: $("finderIdle"),
   continueCard: $("continueCard"),
   continueCover: $("continueCover"),
   continueTitle: $("continueTitle"),
@@ -225,15 +234,16 @@ function setStatus(msg, kind = "") {
 // ----- Screen routing -----
 function showScreen(name) {
   state.screen = name;
-  for (const s of [els.authScreen, els.libraryScreen, els.publicScreen, els.readerScreen]) {
+  for (const s of [els.authScreen, els.libraryScreen, els.publicScreen, els.findScreen, els.readerScreen]) {
     if (!s) continue;
     s.hidden = true;
   }
   if (name === "auth" && els.authScreen) els.authScreen.hidden = false;
   if (name === "library" && els.libraryScreen) els.libraryScreen.hidden = false;
   if (name === "public" && els.publicScreen) els.publicScreen.hidden = false;
+  if (name === "find" && els.findScreen) els.findScreen.hidden = false;
   if (name === "reader" && els.readerScreen) els.readerScreen.hidden = false;
-  els.logoutBtn.hidden = !(state.user && (name === "library" || name === "public" || name === "reader"));
+  els.logoutBtn.hidden = !(state.user && (name === "library" || name === "public" || name === "find" || name === "reader"));
   els.accountName.hidden = els.logoutBtn.hidden;
   els.accountName.textContent = state.user ? state.user.username : "";
   syncMiniPlayer();
@@ -387,6 +397,10 @@ function renderLibrary() {
   els.drop.classList.toggle("drop-big", state.books.length === 0);
   const shown = filteredSortedBooks();
   els.librarySearchEmpty.hidden = !(state.books.length && shown.length === 0);
+  if (!els.librarySearchEmpty.hidden) {
+    const q = els.librarySearch.value.trim();
+    els.findFromLibraryLabel.textContent = `Search free books for \u201c${q}\u201d`;
+  }
   if (state.books.length === 0) return;
   for (const b of shown) {
     const li = document.createElement("li");
@@ -688,6 +702,190 @@ if (els.backFromPublic) {
     showScreen("library");
   });
 }
+
+
+// ----- Find books -----
+// Searches free sources (Project Gutenberg, Internet Archive) through
+// /api/finder; "Add" has the server fetch the book into the library.
+const finder = {
+  seq: 0,                 // drops answers to searches that were replaced
+  query: "",
+  results: [],
+  added: new Map(),       // result id -> library book id, this session
+  busy: new Set(),        // result ids being added
+};
+
+function openFinder(query) {
+  showScreen("find");
+  if (typeof query === "string" && query.trim()) {
+    els.finderInput.value = query.trim();
+    runFinderSearch(query);
+  } else {
+    setTimeout(() => els.finderInput.focus(), 0);
+  }
+}
+
+function setFinderStatus(msg, kind = "") {
+  els.finderStatus.textContent = msg;
+  els.finderStatus.dataset.state = kind;
+}
+
+async function runFinderSearch(raw) {
+  const q = String(raw || "").trim();
+  if (q.length < 2) {
+    setFinderStatus("Type at least 2 letters.", "err");
+    return;
+  }
+  const seq = ++finder.seq;
+  finder.query = q;
+  els.finderIdle.hidden = true;
+  setFinderStatus(`Searching free libraries for “${q}”…`, "busy");
+  els.finderResults.innerHTML = '<li class="finder-row finder-skeleton" aria-hidden="true"></li>'.repeat(3);
+  try {
+    const data = await api(`/api/finder/search?q=${encodeURIComponent(q)}`);
+    if (seq !== finder.seq) return;
+    finder.results = data.results || [];
+    renderFinderResults(data);
+  } catch (e) {
+    if (seq !== finder.seq) return;
+    els.finderResults.innerHTML = "";
+    setFinderStatus(`Search failed: ${e.message}`, "err");
+  }
+}
+
+function finderSummary(data) {
+  const n = finder.results.length;
+  const failed = (data.sources || []).filter((s) => !s.ok).map((s) => s.name);
+  let msg = n === 0
+    ? `No free books found for “${data.query}”. Try fewer words, or just the author’s last name.`
+    : `${n} free book${n === 1 ? "" : "s"} for “${data.query}”`;
+  if (failed.length) msg += `. ${failed.join(" and ")} didn’t answer, so some results may be missing.`;
+  return msg;
+}
+
+function formatBytes(n) {
+  if (!n) return "";
+  return n >= 1048576 ? `${(n / 1048576).toFixed(n >= 10485760 ? 0 : 1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`;
+}
+
+// A book already on the shelf (added now, or earlier with the same title).
+function finderLibraryBook(r) {
+  const id = finder.added.get(r.id);
+  if (id && state.books.some((b) => b.id === id)) return id;
+  const t = r.title.trim().toLowerCase();
+  const match = state.books.find((b) => (b.title || "").trim().toLowerCase() === t && b.kind === r.kind);
+  return match ? match.id : null;
+}
+
+function finderButtonHtml(r) {
+  if (finder.busy.has(r.id)) {
+    return `<button type="button" class="btn btn-primary finder-add" data-id="${escapeHtml(r.id)}" data-state="busy" aria-label="Adding ${escapeHtml(r.title)}"><span class="spinner" aria-hidden="true"></span><span>Adding</span></button>`;
+  }
+  const have = finderLibraryBook(r);
+  if (have) {
+    return `<button type="button" class="btn finder-add" data-id="${escapeHtml(r.id)}" data-state="done" data-book="${have}" aria-label="Open ${escapeHtml(r.title)}"><svg width="16" height="16" aria-hidden="true"><use href="#i-play"/></svg><span>Open</span></button>`;
+  }
+  return `<button type="button" class="btn btn-primary finder-add" data-id="${escapeHtml(r.id)}" data-state="idle" aria-label="Add ${escapeHtml(r.title)} to my library"><svg width="16" height="16" aria-hidden="true"><use href="#i-plus"/></svg><span>Add</span></button>`;
+}
+
+function renderFinderResults(data) {
+  els.finderResults.innerHTML = "";
+  setFinderStatus(data ? finderSummary(data) : "", "");
+  for (const r of finder.results) {
+    const li = document.createElement("li");
+    li.className = "finder-row";
+    li.dataset.id = r.id;
+    const meta = [
+      `<span class="badge">${escapeHtml(r.kind)}</span>`,
+      r.size ? `<span>${formatBytes(r.size)}</span>` : "",
+      r.year ? `<span>${escapeHtml(String(r.year))}</span>` : "",
+      `<a class="badge badge-src" href="${escapeHtml(r.pageUrl)}" target="_blank" rel="noopener noreferrer" title="See this book at ${escapeHtml(r.sourceName)}">${escapeHtml(r.sourceName)}</a>`,
+    ].join("");
+    li.innerHTML = `
+      <div class="finder-cover">${coverHtml({ title: r.title, author: r.author, kind: r.kind })}</div>
+      <div class="finder-body">
+        <h3 class="finder-title">${escapeHtml(r.title)}</h3>
+        ${r.author ? `<p class="finder-author">${escapeHtml(r.author)}</p>` : ""}
+        <p class="finder-meta">${meta}</p>
+      </div>
+      ${finderButtonHtml(r)}
+    `;
+    // The source's cover replaces the generated one once it loads.
+    if (r.cover) {
+      const img = new Image();
+      img.alt = "";
+      img.decoding = "async";
+      img.referrerPolicy = "no-referrer";
+      img.addEventListener("load", () => {
+        if (img.naturalWidth < 20) return; // tracking-pixel sized placeholder
+        const box = li.querySelector(".finder-cover");
+        box.innerHTML = '<div class="cover cover-img"></div>';
+        box.firstChild.appendChild(img);
+      });
+      img.src = r.cover;
+    }
+    els.finderResults.appendChild(li);
+  }
+}
+
+function refreshFinderButton(id) {
+  const r = finder.results.find((x) => x.id === id);
+  const li = r && [...els.finderResults.children].find((el) => el.dataset.id === id);
+  if (!r || !li) return;
+  const old = li.querySelector(".finder-add");
+  old.insertAdjacentHTML("afterend", finderButtonHtml(r));
+  old.remove();
+}
+
+async function addFinderResult(id) {
+  const r = finder.results.find((x) => x.id === id);
+  if (!r || finder.busy.has(id)) return;
+  finder.busy.add(id);
+  refreshFinderButton(id);
+  setStatus(`Adding “${r.title}” from ${r.sourceName}…`, "busy");
+  try {
+    const { book } = await api("/api/finder/add", {
+      method: "POST",
+      body: JSON.stringify({ id: r.id, title: r.title, author: r.author }),
+    });
+    finder.added.set(r.id, book.id);
+    state.books = [book, ...state.books.filter((b) => b.id !== book.id)];
+    setStatus(`Added “${book.title}” to your library`, "ok");
+  } catch (e) {
+    setStatus(`Could not add “${r.title}”: ${e.message}`, "err");
+  } finally {
+    finder.busy.delete(id);
+    refreshFinderButton(id);
+  }
+}
+
+els.finderForm.addEventListener("submit", (e) => {
+  e.preventDefault();
+  els.finderInput.blur(); // closes the phone keyboard so results show
+  runFinderSearch(els.finderInput.value);
+});
+els.finderResults.addEventListener("click", (e) => {
+  const btn = e.target.closest(".finder-add");
+  if (!btn) return;
+  if (btn.dataset.state === "done") openBookFromLibrary(Number(btn.dataset.book));
+  else if (btn.dataset.state === "idle") addFinderResult(btn.dataset.id);
+});
+document.getElementById("finderSuggest").addEventListener("click", (e) => {
+  const chip = e.target.closest("[data-q]");
+  if (chip) {
+    els.finderInput.value = chip.dataset.q;
+    runFinderSearch(chip.dataset.q);
+  }
+});
+els.findFromLibrary.addEventListener("click", () => openFinder(els.librarySearch.value));
+document.querySelectorAll("[data-go]").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    const go = btn.dataset.go;
+    if (go === "find") openFinder();
+    else if (go === "library") { showScreen("library"); renderLibrary(); }
+    else if (go === "public") { showScreen("public"); await loadPublicLibrary(); }
+  });
+});
 
 // Leaving the player keeps the book loaded (and playing); the mini player
 // brings it back.

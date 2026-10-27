@@ -72,6 +72,28 @@ async function createUpload(userId, originalName) {
   };
 }
 
+// Write a file the server already holds (the book finder downloads books
+// server-side). Same ticket the browser's uploads use, so the server still
+// needs no Storage admin key. Returns the object path.
+async function putObject(userId, originalName, buffer, contentType) {
+  const objectPath = `${userId}/${crypto.randomUUID()}-${safeFilename(originalName)}`;
+  await issueTicket(objectPath, "upload");
+  try {
+    const res = await fetch(objectUrl("upload", objectPath), {
+      method: "POST",
+      headers: { ...authHeaders(), "x-upsert": "false", "Content-Type": contentType },
+      body: buffer,
+    });
+    if (!res.ok) {
+      const j = await res.json().catch(() => ({}));
+      throw new Error(`Storage upload failed: ${j.message || j.error || `HTTP ${res.status}`}`);
+    }
+  } finally {
+    await revokeTicket(objectPath, "upload");
+  }
+  return objectPath;
+}
+
 // Size in bytes of an uploaded object, or null if it isn't there.
 async function uploadedSize(objectPath) {
   const row = await queryOne(
@@ -115,6 +137,7 @@ module.exports = {
   SUPABASE_URL,
   safeFilename,
   createUpload,
+  putObject,
   uploadedSize,
   finishUpload,
   createDownload,
