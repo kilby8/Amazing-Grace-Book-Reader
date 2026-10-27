@@ -119,6 +119,11 @@ const IA_ITEMS = {
     metadata: { title: "Moby Dick Redirected", collection: ["americana"] },
     files: [{ name: "sneakyredirect.pdf", format: "Text PDF", size: "1000" }],
   },
+  flakymirror: {
+    doc: { identifier: "flakymirror", title: "Moby Dick Flaky Mirror", creator: "Nobody", downloads: 1 },
+    metadata: { title: "Moby Dick Flaky Mirror", collection: ["americana"] },
+    files: [{ name: "flakymirror.pdf", format: "Text PDF", size: "1000" }],
+  },
   notapdf: {
     doc: { identifier: "notapdf", title: "Moby Dick Not A PDF", creator: "Nobody", downloads: 1 },
     metadata: { title: "Moby Dick Not A PDF", collection: ["americana"] },
@@ -147,7 +152,9 @@ async function fakeFetch(input, opts = {}) {
       if (q.includes("moby") || q.includes("whale")) {
         return new Response(opds([
           opdsEntry(2701, "Moby Dick; Or, The Whale", "Herman Melville"),
+          opdsEntry(2489, "Moby-Dick; or, The Whale", "Herman Melville"),
           opdsEntry(15, "Moby-Dick &amp; Other Tales", "Herman Melville"),
+          opdsEntry(20000, "The treasury of David, Volume 1 (of 6), Psalm 1-26 : Containing an original exposition of the book of Psalms; a collection of illustrative extracts", "C. H. Spurgeon"),
           opdsEntry(21816, "The Confidence-Man: His Masquerade", "Herman Melville"),
         ]), { headers: { "Content-Type": "application/atom+xml" } });
       }
@@ -186,6 +193,10 @@ async function fakeFetch(input, opts = {}) {
 
   if (/\.us\.archive\.org$/.test(host)) {
     const m = /^\/1\/items\/([^/]+)\/(.+)$/.exec(url.pathname);
+    if (m && m[1] === "flakymirror" && !fakeFetch.flaked) {
+      fakeFetch.flaked = true;
+      throw new TypeError("fetch failed");
+    }
     if (m && m[1] === "notapdf") return new Response("<html>Please log in</html>", { headers: { "Content-Type": "text/html" } });
     if (m && m[2].endsWith(".pdf")) return new Response(PDF, { headers: { "Content-Type": "application/pdf" } });
     if (m && m[2].endsWith(".epub")) return new Response(EPUB, { headers: { "Content-Type": "application/epub+zip" } });

@@ -55,6 +55,8 @@ if (LIVE) {
     check(`live "${q}": right book in the top 3 (${ms} ms)`, top3.some((r) => t.test(r.title) && a.test(r.author)), titles(top3));
     check(`live "${q}": every source answered`, res.sources.every((s) => s.ok), JSON.stringify(res.sources));
     check(`live "${q}": has a PDF result`, res.results.some((r) => r.kind === "pdf"), titles(res.results));
+    const keys = res.results.filter((r) => r.source === "gutenberg").map((r) => r.title.toLowerCase());
+    check(`live "${q}": no repeated Gutenberg titles`, new Set(keys).size === keys.length, keys.join(" | "));
   }
   const res = await f.search("moby dick");
   for (const pick of [res.results.find((r) => r.source === "gutenberg"), res.results.find((r) => r.source === "ia" && r.kind === "pdf")]) {
@@ -80,6 +82,8 @@ if (LIVE) {
   check("Gutenberg's Moby Dick ranks first", ids[0] === "gutenberg:2701", titles(res.results));
   check("the Internet Archive PDF is in the top 3", ids.slice(0, 3).includes("ia:mobydickorwhale01melvuoft"), titles(res.results));
   check("navigation entries in the OPDS feed are skipped", res.results.every((r) => !/sort alphabetically/i.test(r.title)));
+  check("other Gutenberg editions of the same book are dropped", !ids.includes("gutenberg:2489"), titles(res.results));
+  check("very long catalogue titles keep their main part", res.results.some((r) => r.title === "The treasury of David, Volume 1 (of 6), Psalm 1-26"), titles(res.results));
   check("XML entities are decoded", res.results.some((r) => r.title === "Moby-Dick & Other Tales"));
   check("several scans of one book collapse to the most downloaded", !ids.includes("ia:mobydick00melv_1"), titles(res.results));
   check("borrow-only Internet Archive books are dropped", !ids.includes("ia:mobydicklending0000melv"));
@@ -118,6 +122,8 @@ if (LIVE) {
   check("Gutenberg falls back to the older EPUB when epub3 is missing", g15.kind === "epub" && g15.buffer.equals(fx.EPUB));
   const p = await f.download("ia:mobydickorwhale01melvuoft");
   check("IA download follows the redirect to the PDF", p.kind === "pdf" && p.buffer.equals(fx.PDF));
+  const flaky = await f.download("ia:flakymirror");
+  check("a dropped connection is tried once more", flaky.kind === "pdf" && fx.fakeFetch.flaked === true);
   check("a redirect off the source hosts is refused", await rejects(f.download("ia:sneakyredirect"), /unexpected/));
   check("a download that isn't the promised file type is refused", await rejects(f.download("ia:notapdf"), /wasn't a PDF/));
   check("borrow-only items can't be downloaded", await rejects(f.download("ia:mobydicklending0000melv"), /borrowed/));

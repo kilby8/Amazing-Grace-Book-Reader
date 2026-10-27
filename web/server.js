@@ -501,7 +501,9 @@ app.post("/api/finder/add", requireAuth, finderAddLimiter, wrap(async (req, res)
     file = await finder.download(String(id || ""));
   } catch (e) {
     const status = e.status || (e.name === "TimeoutError" ? 504 : 502);
-    const msg = e.name === "TimeoutError" ? "The book took too long to download, try again" : e.message;
+    const msg = e.name === "TimeoutError" ? "The book took too long to download, try again"
+      : e.name === "TypeError" ? "Couldn't reach the library that has this book, try again in a moment"
+      : e.message;
     return res.status(status).json({ error: msg });
   }
   const cleanTitle = String(title || "").replace(/\s+/g, " ").trim().slice(0, 200) || "Untitled";

@@ -80,9 +80,17 @@ function tidyAuthor(a) {
   return s.replace(/\s+/g, " ").trim();
 }
 
+// Long catalogue titles ("The treasury of David, Volume 1 (of 6), Psalm
+// 1-26 : Containing an original exposition of ...") keep their main part.
 function tidyTitle(t) {
   if (Array.isArray(t)) t = t[0];
-  return String(t || "").replace(/\s+/g, " ").replace(/[\s;:,/.]+$/, "").trim() || "Untitled";
+  let s = String(t || "").replace(/\s+/g, " ").trim();
+  if (s.length > 80) {
+    const cut = s.slice(12).search(/\s:\s|;\s|:\s/);
+    if (cut >= 0) s = s.slice(0, cut + 12);
+  }
+  if (s.length > 120) s = `${s.slice(0, 117).replace(/\s+\S*$/, "")}\u2026`;
+  return s.replace(/[\s;:,/.]+$/, "").trim() || "Untitled";
 }
 
 function cleanQuery(q) {
@@ -121,18 +129,26 @@ function createFinder({ fetchImpl = globalThis.fetch, maxBytes = 50 * 1024 * 102
     const url = `https://www.gutenberg.org/ebooks/search.opds/?query=${encodeURIComponent(q)}`;
     const xml = await (await get(url, { accept: "application/atom+xml" })).text();
     const out = [];
+    const seen = new Set();
     for (const entry of xml.split(/<entry>/).slice(1)) {
       const id = /<id>[^<]*\/ebooks\/(\d+)\.opds<\/id>/.exec(entry);
       if (!id) continue; // navigation entries ("sort by", "next page")
       const title = /<title>([\s\S]*?)<\/title>/.exec(entry);
       const author = /<content[^>]*>([\s\S]*?)<\/content>/.exec(entry);
       const n = id[1];
+      const t = tidyTitle(decodeXml(title && title[1]));
+      const a = decodeXml(author && author[1]);
+      // Gutenberg has several editions of popular books; the feed is in
+      // popularity order, so the first is the one people read.
+      const k = bookKey(t, a);
+      if (seen.has(k)) continue;
+      seen.add(k);
       out.push({
         id: `gutenberg:${n}`,
         source: "gutenberg",
         sourceName: SOURCES.gutenberg.name,
-        title: tidyTitle(decodeXml(title && title[1])),
-        author: decodeXml(author && author[1]),
+        title: t,
+        author: a,
         year: null,
         kind: "epub",
         size: null,
@@ -333,23 +349,36 @@ function createFinder({ fetchImpl = globalThis.fetch, maxBytes = 50 * 1024 * 102
     return buf[0] === 0x50 && buf[1] === 0x4b; // "PK": EPUB is a zip
   }
 
+  // One try at one URL: the file, or null when the source says no.
+  async function attempt(url, kind) {
+    const res = await fetchFollowing(url);
+    if (!res.ok) {
+      if (res.body) await res.body.cancel().catch(() => {});
+      throw Object.assign(new Error(`${new URL(url).hostname} answered HTTP ${res.status}`), { next: true });
+    }
+    const buffer = await readCapped(res);
+    if (!looksLike(kind, buffer)) {
+      throw Object.assign(new Error(`That download wasn't a ${kind.toUpperCase()} file`), { next: true });
+    }
+    return buffer;
+  }
+
   // Download a result. Returns { kind, buffer }.
   async function download(id) {
     const target = await resolveDownload(id);
     let lastError = null;
     for (const url of target.urls) {
-      const res = await fetchFollowing(url);
-      if (!res.ok) {
-        lastError = new Error(`${new URL(url).hostname} answered HTTP ${res.status}`);
-        if (res.body) await res.body.cancel().catch(() => {});
-        continue;
+      for (let tries = 0; tries < 2; tries++) {
+        try {
+          return { kind: target.kind, buffer: await attempt(url, target.kind) };
+        } catch (e) {
+          lastError = e;
+          // Archive mirrors drop the odd connection: one more try. A clear
+          // "no" moves on to the next URL; anything else is final.
+          if (e.next) break;
+          if (e.name !== "TypeError" || tries === 1) throw Object.assign(e, { status: e.status || 502 });
+        }
       }
-      const buffer = await readCapped(res);
-      if (!looksLike(target.kind, buffer)) {
-        lastError = new Error(`That download wasn't a ${target.kind.toUpperCase()} file`);
-        continue;
-      }
-      return { kind: target.kind, buffer };
     }
     throw Object.assign(lastError || new Error("Download failed"), { status: 502 });
   }
