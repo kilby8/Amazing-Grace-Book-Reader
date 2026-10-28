@@ -494,7 +494,7 @@ img { display: block; max-width: 100%; }
 }
 .book-card:hover .book-card-actions, .book-card:focus-within .book-card-actions { opacity: 1; }
 @media (hover: none) { .book-card-actions { opacity: 1; } }
-.book-card-share, .book-card-del {
+.book-card-share, .book-card-del, .book-card-save {
   display: inline-flex; align-items: center; gap: 4px;
   height: 32px; min-width: 32px; padding: 0 8px; justify-content: center;
   border: 0; border-radius: var(--radius-pill);
@@ -502,10 +502,36 @@ img { display: block; max-width: 100%; }
   -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
   font: 600 11px/1 var(--font-ui); cursor: pointer;
 }
-.book-card-share:hover, .book-card-del:hover { background: oklch(15% 0.02 50 / 0.78); }
-.book-card-share .book-card-share-label { display: none; }
-.book-card-share[aria-pressed="true"] .book-card-share-label { display: inline; }
+.book-card-share:hover, .book-card-del:hover, .book-card-save:hover { background: oklch(15% 0.02 50 / 0.78); }
+.book-card-share[aria-pressed="true"] { background: oklch(52% 0.13 150 / 0.88); }
+.book-card-save { padding: 0 10px 0 8px; font-size: 12px; }
+.book-card-save[aria-pressed="false"] { background: var(--color-accent); color: var(--color-accent-fg); }
+.book-card-save[aria-pressed="false"]:hover { background: var(--color-accent-hover); }
+.book-card-save[aria-pressed="true"] { background: oklch(52% 0.13 150 / 0.88); }
 .book-card-sharedby { color: var(--color-fg-muted); }
+.book-card-from { display: flex; align-items: center; gap: 4px; color: var(--color-fg-muted); }
+.book-card-from svg { flex: none; }
+.book-card-tags { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+
+/* ----- Public library ----- */
+.public-note { font-size: var(--text-sm); margin: calc(-1 * var(--space-2)) 0 var(--space-5); }
+.share-intro { font-size: var(--text-sm); margin-bottom: var(--space-4); }
+.share-list { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--space-2); }
+.share-row {
+  display: grid; grid-template-columns: 40px 1fr auto; gap: var(--space-3); align-items: center;
+  padding: var(--space-2) var(--space-2) var(--space-2) var(--space-2);
+  border: 1px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-bg);
+}
+.share-cover { width: 40px; }
+.share-cover .cover { padding: 8%; border-radius: 4px; }
+.share-cover .cover-title { font-size: 6px; }
+.share-cover .cover-kind, .share-cover .cover-author { display: none; }
+.share-body { min-width: 0; display: grid; gap: 2px; }
+.share-title { font-weight: 600; line-height: 1.25; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.share-meta { display: flex; align-items: center; gap: 6px; font-size: var(--text-xs); color: var(--color-fg-muted); min-width: 0; overflow: hidden; white-space: nowrap; }
+.share-toggle { min-width: 104px; min-height: 40px; }
+.share-toggle[aria-pressed="true"] { color: var(--color-ok); border-color: var(--color-line-strong); }
+.share-empty { display: grid; justify-items: start; gap: var(--space-3); }
 
 .drop {
   display: flex; align-items: center; gap: var(--space-4);
@@ -773,6 +799,9 @@ input[type="range"]:disabled { cursor: default; opacity: 0.55; }
   .library-greeting { font-size: var(--text-2xl); }
   .library-head .btn-primary span { display: none; }
   .library-head .btn-primary { width: 48px; padding: 0; }
+  /* "+" alone would read as Add book; the share button keeps its words. */
+  .library-head #shareBookBtn { width: auto; padding: 0 var(--space-4); }
+  .library-head #shareBookBtn span { display: inline; }
   .continue { grid-template-columns: 96px 1fr; gap: var(--space-4); padding: var(--space-4); }
   .continue-title { font-size: var(--text-xl); }
   .continue .btn-large { min-height: 46px; }

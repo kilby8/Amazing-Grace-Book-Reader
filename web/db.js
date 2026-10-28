@@ -16,13 +16,17 @@
 //   books:  id, user_id (fk), title, author, kind ('pdf'|'epub'),
 //           filename (storage key: on-disk name, or object path in Supabase
 //           Storage), size, added_at, last_opened_at,
-//           visibility ('private'|'public'), shared_at (ms; null while private)
+//           visibility ('private'|'public'), shared_at (ms; null while private),
+//           source (Find books result id, e.g. "gutenberg:2701"; null for
+//           uploads; marks a free book and dedupes the public shelf)
 //   reading_progress: (user_id, book_id) pk, page (1-based), char_offset
 //           (into the page's chunked text, see app.js), total_pages,
 //           updated_at. Per reader, so a public book keeps each reader's
 //           own place.
 //   bookmarks: id, user_id, book_id, page, char_offset (same model as
 //           reading_progress), note (optional), created_at. Per reader.
+//   library_saves: (user_id, book_id) pk, saved_at. Public books a reader
+//           kept on their own shelf; see PUBLIC_LIBRARY.md.
 //   sessions: login sessions, see session-store.js
 //   storage_tickets (Postgres only): short-lived Storage capabilities, see
 //           storage.js
@@ -83,6 +87,9 @@ function sqlite() {
   if (!bookCols.has("shared_at")) {
     _sqlite.exec("ALTER TABLE books ADD COLUMN shared_at INTEGER");
   }
+  if (!bookCols.has("source")) {
+    _sqlite.exec("ALTER TABLE books ADD COLUMN source TEXT");
+  }
   _sqlite.exec(`
     CREATE TABLE IF NOT EXISTS reading_progress (
       user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -109,6 +116,13 @@ function sqlite() {
       created_at  INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS bookmarks_user_book_idx ON bookmarks(user_id, book_id);
+    CREATE TABLE IF NOT EXISTS library_saves (
+      user_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      book_id  INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+      saved_at INTEGER NOT NULL,
+      PRIMARY KEY (user_id, book_id)
+    );
+    CREATE INDEX IF NOT EXISTS library_saves_book_idx ON library_saves(book_id);
   `);
   // Partial index for the public feed (only rows where it matters).
   _sqlite.exec(

@@ -302,14 +302,15 @@ app.get("/api/me", (req, res) => {
 
 // ----- Books endpoints -----
 
-const BOOK_COLUMNS = "id, title, author, kind, size, added_at, last_opened_at, visibility, shared_at";
+const BOOK_COLUMNS = "id, title, author, kind, size, added_at, last_opened_at, visibility, shared_at, source";
 
-async function insertBook(userId, { title, author, kind, filename, size }) {
-  return queryOne(
-    `INSERT INTO books (user_id, title, author, kind, filename, size)
-     VALUES (?, ?, ?, ?, ?, ?) RETURNING ${BOOK_COLUMNS}`,
-    [userId, title, author, kind, filename, size]
+async function insertBook(userId, { title, author, kind, filename, size, source = null }) {
+  const book = await queryOne(
+    `INSERT INTO books (user_id, title, author, kind, filename, size, source)
+     VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING ${BOOK_COLUMNS}`,
+    [userId, title, author, kind, filename, size, source]
   );
+  return { ...book, owned: true };
 }
 
 // Upload, local storage: the file comes through this server.
@@ -377,34 +378,105 @@ app.post("/api/books/uploads/complete", requireAuth, wrap(async (req, res) => {
   res.json({ book });
 }));
 
+// Your own books, then the public books you saved from the public library
+// (owned: false). A saved book counts as added when you saved it and as
+// opened when you last moved in it, since last_opened_at is the owner's.
+// It drops out if its owner makes it private again.
 app.get("/api/books", requireAuth, wrap(async (req, res) => {
-  const books = await query(
+  const uid = req.session.userId;
+  const rows = await query(
     `SELECT b.id, b.title, b.author, b.kind, b.size, b.added_at, b.last_opened_at,
-            b.visibility, b.shared_at,
+            b.visibility, b.shared_at, b.source, 1 AS owned, NULL AS shared_by,
             p.page AS progress_page, p.total_pages AS progress_total_pages
      FROM books b
      LEFT JOIN reading_progress p ON p.book_id = b.id AND p.user_id = b.user_id
      WHERE b.user_id = ?
-     ORDER BY b.added_at DESC`,
-    [req.session.userId]
+     UNION ALL
+     SELECT b.id, b.title, b.author, b.kind, b.size, s.saved_at AS added_at, p.updated_at AS last_opened_at,
+            b.visibility, b.shared_at, b.source, 0 AS owned, u.username AS shared_by,
+            p.page AS progress_page, p.total_pages AS progress_total_pages
+     FROM library_saves s
+     JOIN books b ON b.id = s.book_id
+     JOIN users u ON u.id = b.user_id
+     LEFT JOIN reading_progress p ON p.book_id = b.id AND p.user_id = s.user_id
+     WHERE s.user_id = ? AND b.user_id <> ? AND b.visibility = 'public'
+     ORDER BY added_at DESC`,
+    [uid, uid, uid]
   );
-  res.json({ books });
+  res.json({ books: rows.map((b) => ({ ...b, owned: Boolean(Number(b.owned)) })) });
 }));
 
 // ----- Public library -----
-// Authenticated users only. Lists every book marked public across all users,
-// joined with the uploader's username so the UI can show "Shared by @...".
-// Sorted by shared_at DESC so the most recent shares surface first.
+// See PUBLIC_LIBRARY.md. Authenticated users only. Every book marked public
+// across all users, newest share first, with who shared it, whether it's
+// the caller's own or saved by them, how many readers kept it, and the
+// caller's own progress. Two copies of the same free book (same source)
+// show once: the caller's saved or own copy if any, else the first shared.
 app.get("/api/public-books", requireAuth, wrap(async (req, res) => {
-  const books = await query(
-    `SELECT b.id, b.title, b.author, b.kind, b.size, b.shared_at,
-            u.username AS shared_by
+  const uid = req.session.userId;
+  const rows = await query(
+    `SELECT b.id, b.user_id, b.title, b.author, b.kind, b.size, b.shared_at, b.source,
+            u.username AS shared_by,
+            p.page AS progress_page, p.total_pages AS progress_total_pages,
+            (SELECT COUNT(*) FROM library_saves s WHERE s.book_id = b.id) AS saves,
+            (SELECT COUNT(*) FROM library_saves s WHERE s.book_id = b.id AND s.user_id = ?) AS saved
      FROM books b
      JOIN users u ON u.id = b.user_id
+     LEFT JOIN reading_progress p ON p.book_id = b.id AND p.user_id = ?
      WHERE b.visibility = 'public'
-     ORDER BY b.shared_at DESC, b.id DESC`
+     ORDER BY b.shared_at DESC, b.id DESC`,
+    [uid, uid]
   );
+  const rank = (b) => (b.saved ? 0 : b.mine ? 1 : 2);
+  const bySource = new Map();
+  const books = [];
+  for (const r of rows) {
+    const { user_id: owner, ...rest } = r;
+    const b = { ...rest, mine: owner === uid, saved: Number(r.saved) > 0, saves: Number(r.saves) || 0, free: Boolean(r.source) };
+    if (!b.source) { books.push(b); continue; }
+    const seen = bySource.get(b.source);
+    // Rows are newest first, so an equal rank keeps replacing the kept copy
+    // with an older one: the first share wins.
+    if (!seen) { bySource.set(b.source, b); books.push(b); }
+    else if (rank(b) <= rank(seen)) {
+      books[books.indexOf(seen)] = b;
+      bySource.set(b.source, b);
+    }
+  }
   res.json({ books });
+}));
+
+// Keep a public book that isn't yours on your own shelf, or drop it.
+// Idempotent. Your own books are already on your shelf.
+async function saveableBook(req, res) {
+  const id = bookId(req, res);
+  if (id === null) return null;
+  const book = await queryOne("SELECT id, user_id, visibility FROM books WHERE id = ?", [id]);
+  if (!book) {
+    res.status(404).json({ error: "Not found" });
+    return null;
+  }
+  if (book.user_id === req.session.userId) {
+    res.status(400).json({ error: "That book is already yours" });
+    return null;
+  }
+  return book;
+}
+app.post("/api/public-books/:id/save", requireAuth, wrap(async (req, res) => {
+  const book = await saveableBook(req, res);
+  if (!book) return;
+  if (book.visibility !== "public") return res.status(404).json({ error: "Not found" });
+  await query(
+    "INSERT INTO library_saves (user_id, book_id, saved_at) VALUES (?, ?, ?) ON CONFLICT (user_id, book_id) DO NOTHING",
+    [req.session.userId, book.id, Date.now()]
+  );
+  res.json({ ok: true, saved: true });
+}));
+app.delete("/api/public-books/:id/save", requireAuth, wrap(async (req, res) => {
+  const book = await saveableBook(req, res);
+  if (!book) return;
+  await query("DELETE FROM library_saves WHERE user_id = ? AND book_id = ?", [req.session.userId, book.id]);
+  res.json({ ok: true, saved: false });
 }));
 
 // Toggle a book's visibility. Owner-only; idempotent.
@@ -525,6 +597,7 @@ app.post("/api/finder/add", requireAuth, finderAddLimiter, wrap(async (req, res)
     kind: file.kind,
     filename,
     size: file.buffer.length,
+    source: String(id),
   });
   res.json({ book });
 }));
@@ -754,7 +827,15 @@ app.delete("/api/books/:id", requireAuth, wrap(async (req, res) => {
     "SELECT id, filename FROM books WHERE id = ? AND user_id = ?",
     [id, req.session.userId]
   );
-  if (!book) return res.status(404).json({ error: "Not found" });
+  if (!book) {
+    // A public book you saved: take it off your shelf, never touch the file.
+    const saved = await query(
+      "DELETE FROM library_saves WHERE user_id = ? AND book_id = ? RETURNING book_id",
+      [req.session.userId, id]
+    );
+    if (saved.length) return res.json({ ok: true, unsaved: true });
+    return res.status(404).json({ error: "Not found" });
+  }
   await query("DELETE FROM books WHERE id = ?", [book.id]);
   if (storage.MODE === "local") {
     const filePath = path.join(BOOKS_DIR, String(req.session.userId), book.filename);

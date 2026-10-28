@@ -9,7 +9,8 @@
     "dev": "node server.js",
     "test": "node test-progress.mjs",
     "test:playback": "node test-playback.mjs",
-    "test:ui": "node test-ui.mjs"
+    "test:ui": "node test-ui.mjs",
+    "test:public": "node test-public.mjs"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

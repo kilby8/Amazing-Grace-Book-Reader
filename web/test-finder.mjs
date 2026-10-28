@@ -200,6 +200,7 @@ try {
   const pdfBook = r.json && r.json.book;
   r = await me.req("/api/books");
   check("it's on the shelf", r.json.books.some((b) => pdfBook && b.id === pdfBook.id && b.title === "Moby-Dick; or, The whale"));
+  check("it remembers which free source it came from", r.json.books.some((b) => pdfBook && b.id === pdfBook.id && b.source === "ia:mobydickorwhale01melvuoft"));
   r = await me.req(`/api/books/${pdfBook.id}/file`);
   check("its file is the PDF that was fetched", r.status === 200 && r.buf.equals(fx.PDF) && r.headers.get("content-type") === "application/pdf");
   const other = client();
