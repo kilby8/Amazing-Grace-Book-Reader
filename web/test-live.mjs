@@ -1,7 +1,8 @@
 // Smoke test for a deployed site (Vercel + Supabase). Walks the same HTTP
 // flow the browser does: sign up, upload a PDF straight to Storage, open
 // it, save a reading position and a bookmark, check another user can't
-// reach them, delete.
+// reach them, share it to the public library and save it as the other
+// user, delete.
 // Creates two throwaway accounts named smoke_<timestamp>_a/_b.
 //
 //   node test-live.mjs https://amazing-grace-reader.vercel.app
@@ -114,6 +115,24 @@ r = await a(`/api/books/${book.id}/visibility`, { method: "POST", body: { visibi
 check("share publicly", r.status === 200);
 r = await b(`/api/books/${book.id}/download`);
 check("B can download it once public", r.status === 200 && r.json.url);
+
+// Public library: B sees it, saves it to their shelf, removes it again
+// without touching A's file.
+r = await b("/api/public-books");
+let pub = r.status === 200 && (r.json.books || []).find((x) => x.id === book.id);
+check("public library lists it", Boolean(pub) && pub.mine === false && pub.saved === false, JSON.stringify(pub));
+r = await b(`/api/public-books/${book.id}/save`, { method: "POST" });
+check("B saves it to My books", r.status === 200 && r.json.saved === true, JSON.stringify(r.json));
+r = await b("/api/books");
+const savedRow = r.status === 200 && (r.json.books || []).find((x) => x.id === book.id);
+check("it's on B's shelf, not owned", Boolean(savedRow) && savedRow.owned === false, JSON.stringify(savedRow));
+r = await a("/api/public-books");
+pub = (r.json.books || []).find((x) => x.id === book.id);
+check("A sees it as theirs with 1 save", pub && pub.mine === true && pub.saves === 1, JSON.stringify(pub));
+r = await b(`/api/books/${book.id}`, { method: "DELETE" });
+check("B removing it only unsaves", r.status === 200 && r.json.unsaved === true, JSON.stringify(r.json));
+r = await a(`/api/books/${book.id}/download`);
+check("A's file is untouched", r.status === 200 && r.json.url);
 
 r = await a(`/api/books/${book.id}`, { method: "DELETE" });
 check("delete", r.status === 200);
