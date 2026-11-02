@@ -1,13 +1,13 @@
 [Unit]
-Description=Pocket TTS health check (logs to syslog, non-zero on failure)
+Description=Pocket TTS health check (restarts pocket-tts if it stops answering)
 After=pocket-tts.service
 
 [Service]
 Type=oneshot
-User=ubuntu
-# Loopback only - pocket-tts is not exposed outside the VM.
-ExecStart=/usr/bin/curl -fsS --max-time 10 http://127.0.0.1:8765/health
-SuccessExitStatus=0
-# On failure, leave a clear syslog line so it's easy to spot in the journal.
+# Root, so it can restart the service. Loopback only - pocket-tts is not
+# exposed outside the VM. Two misses in a row (about 30 s apart) mean the
+# server is frozen or stuck on one request (/health says 503 then): restart it.
+# On 2026-11-02 it froze and stayed frozen, since nothing restarted it.
+ExecStart=/bin/sh -c 'curl -fsS --max-time 15 http://127.0.0.1:8765/health || { sleep 15; curl -fsS --max-time 15 http://127.0.0.1:8765/health; } || { echo "pocket-tts not answering; restarting"; systemctl restart pocket-tts; }'
 StandardOutput=journal
 StandardError=journal

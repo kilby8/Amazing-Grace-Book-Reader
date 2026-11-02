@@ -238,13 +238,17 @@ async function api(path, opts = {}) {
 let toastTimer = null;
 // kind "quiet" updates the text without popping the toast (the player
 // already shows what is playing).
+// kind "stuck": a problem that lasts (the voice server not answering);
+// the message stays on screen until the next status replaces it.
 function setStatus(msg, kind = "") {
   const quiet = kind === "quiet";
-  if (kind === "err" && msg && window.agrBugLog) window.agrBugLog.note("toast", msg);
+  const sticky = kind === "stuck";
+  if ((kind === "err" || sticky) && msg && window.agrBugLog) window.agrBugLog.note("toast", msg);
   els.status.textContent = msg;
-  els.status.dataset.state = quiet ? "busy" : kind || "idle";
+  els.status.dataset.state = quiet ? "busy" : sticky ? "err" : kind || "idle";
   clearTimeout(toastTimer);
   els.status.classList.toggle("toast-show", Boolean(msg) && !quiet);
+  if (sticky) return;
   const ms = kind === "err" ? 8000 : kind === "busy" ? 2500 : 3500;
   toastTimer = setTimeout(() => els.status.classList.remove("toast-show"), ms);
 }
@@ -1459,7 +1463,12 @@ function beaconProgress() {
 }
 window.addEventListener("pagehide", beaconProgress);
 document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState === "hidden") beaconProgress();
+  if (document.visibilityState === "hidden") { beaconProgress(); return; }
+  // Phones can pause the audio while the page is hidden (a call, another
+  // app's sound). Coming back while still meant to be playing, carry on.
+  if (state.isPlaying && !state.isPaused && !state.audioCtxSuspended && audioCtx && audioCtx.state !== "running" && els.engine.value !== "browser") {
+    audioCtx.resume().catch(() => {});
+  }
 });
 
 async function restoreProgress(bookId) {
@@ -1891,6 +1900,67 @@ const POCKET_KEEP_BEHIND = 12; // played buffers kept for "back 30 s"
 
 let pocketStream = null;
 
+// The hosted Pocket server can stop answering (it froze on 2026-11-02 and
+// stayed frozen until restarted). A request that never answers must not
+// stall the book: each request gets a deadline, failed requests are
+// retried with growing pauses for as long as the listener keeps playing,
+// and reading carries on by itself once the server answers again.
+const POCKET_RETRY_MS = [1000, 2000, 4000, 8000, 15000];
+const POCKET_WAIT_NOTICE_MS = 6000; // silent this long: say why, and keep saying it
+
+// Longest a request may take: three times the expected generation time,
+// plus 20 s of slack for a server that is busy with someone else.
+function pocketTimeoutMs(msPerChar, chars) {
+  return 20000 + 3 * chars * Math.max(20, msPerChar || 40);
+}
+
+// POST text to the Pocket server; resolves to the WAV bytes. Rejects with
+// err.timeout on the deadline, err.status on an HTTP error, or an
+// AbortError when `outer` is aborted (the stream stopped).
+function pocketTts(base, voice, text, timeoutMs, outer) {
+  const ctl = new AbortController();
+  const onOuter = () => ctl.abort();
+  if (outer) {
+    if (outer.aborted) ctl.abort();
+    else outer.addEventListener("abort", onOuter, { once: true });
+  }
+  let timedOut = false;
+  const timer = setTimeout(() => { timedOut = true; ctl.abort(); }, timeoutMs);
+  const form = new FormData();
+  form.append("text", text);
+  if (voice) form.append("voice_url", voice);
+  return fetch(`${base}/tts`, { method: "POST", body: form, signal: ctl.signal })
+    .then(async (r) => {
+      if (!r.ok) {
+        const body = await r.text().catch(() => "");
+        const e = new Error(`HTTP ${r.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
+        e.status = r.status;
+        throw e;
+      }
+      return r.arrayBuffer();
+    })
+    .catch((e) => {
+      if (timedOut) {
+        const t = new Error("no answer");
+        t.timeout = true;
+        throw t;
+      }
+      throw e;
+    })
+    .finally(() => {
+      clearTimeout(timer);
+      if (outer) outer.removeEventListener("abort", onOuter);
+    });
+}
+
+// The server turned this request down for good (a bad voice, say), so
+// asking again won't help. Everything else is worth retrying.
+function pocketRefused(e) {
+  return Boolean(e.status) && e.status >= 400 && e.status < 500 && ![408, 425, 429].includes(e.status);
+}
+
+const POCKET_STUCK_MSG = "The natural voice server isn't answering. Still trying \u2014 reading picks up by itself when it's back. (Or choose \u201cThis device's voice\u201d under Voice.)";
+
 // Sentences of a page with their offsets. Sentences longer than
 // MAX_CHARS_POCKET are pre-split on words, as chunkText() does.
 function pageAtoms(page) {
@@ -1972,6 +2042,9 @@ function startPocketStream(page, offset) {
     msPerChar: state.pocketMsPerChar || 40,
     done: false,          // producer reached the end of the book
     startOffset: offset,  // where playback will begin, for the slider
+    ctl: new AbortController(), // aborts the request in flight on stop
+    stalled: false,       // the last request failed; retrying
+    waitTimer: null,      // shows why playback is silent if it lasts
   };
   s.prodAtoms = atomsFrom(s.prodAtoms, offset);
   state.pocketPlayToken = s.token;
@@ -2012,11 +2085,7 @@ function warmPocketStart() {
   const voice = els.pocketVoice.value.trim() || undefined;
   const key = pocketWarmKey(base, voice, item.text);
   if (pocketWarm && pocketWarm.key === key) return;
-  const form = new FormData();
-  form.append("text", item.text);
-  if (voice) form.append("voice_url", voice);
-  const promise = fetch(`${base}/tts`, { method: "POST", body: form })
-    .then((res) => (res.ok ? res.arrayBuffer() : Promise.reject(new Error(`HTTP ${res.status}`))));
+  const promise = pocketTts(base, voice, item.text, pocketTimeoutMs(state.pocketMsPerChar, item.text.length));
   promise.catch(() => { if (pocketWarm && pocketWarm.key === key) pocketWarm = null; });
   pocketWarm = { key, promise };
 }
@@ -2026,6 +2095,8 @@ function stopPocketStream() {
   pocketStream = null;
   state.pocketPlayToken = (state.pocketPlayToken || 0) + 1;
   if (!s) return;
+  try { s.ctl.abort(); } catch (_) {}
+  clearTimeout(s.waitTimer);
   for (const n of [s.cur, s.next]) {
     if (n && n.source) { try { n.source.stop(); } catch (_) {} }
   }
@@ -2066,35 +2137,12 @@ async function runPocketProducer(s) {
     const budget = Math.floor((ahead * 1000 * 0.7) / Math.max(5, s.msPerChar));
     const item = nextPocketText(s, Math.max(POCKET_MIN_CHARS, Math.min(MAX_CHARS_POCKET, budget)));
     if (!item) { s.done = true; break; }
-    const form = new FormData();
-    form.append("text", item.text);
-    if (s.voice) form.append("voice_url", s.voice);
     const warm = pocketWarm && pocketWarm.key === pocketWarmKey(s.base, s.voice, item.text) ? pocketWarm.promise : null;
     if (warm) pocketWarm = null;
-    const t0 = performance.now();
-    try {
-      let arrayBuffer = warm ? await warm.catch(() => null) : null;
-      if (!alive()) return;
-      if (!arrayBuffer) {
-        const r = await fetch(`${s.base}/tts`, { method: "POST", body: form });
-        if (!alive()) return;
-        if (!r.ok) {
-          const body = await r.text().catch(() => "");
-          throw new Error(`HTTP ${r.status}: ${body || r.statusText}`);
-        }
-        arrayBuffer = await r.arrayBuffer();
-        if (!alive()) return;
-        const msPerChar = (performance.now() - t0) / Math.max(1, item.text.length);
-        s.msPerChar = state.pocketMsPerChar = s.msPerChar * 0.6 + msPerChar * 0.4;
-      }
-      item.buffer = await getAudioCtx().decodeAudioData(arrayBuffer);
-      if (!alive()) return;
-    } catch (e) {
-      if (!alive()) return;
-      setStatus(`The natural voice didn't answer (${e.message}). Try again, or choose "This device's voice" under Voice.`, "err");
-      stopInternal();
-      return;
-    }
+    const buffer = await fetchPocketBuffer(s, item, warm, alive);
+    if (!alive()) return;
+    if (!buffer) return; // refused; fetchPocketBuffer stopped playback
+    item.buffer = buffer;
     s.items.push(item);
     if (s.waiting && s.playIdx === s.items.length - 1) playPocketItem(s, s.playIdx, 0);
     else schedulePocketNext(s);
@@ -2102,6 +2150,54 @@ async function runPocketProducer(s) {
   // Producer finished: if playback is waiting on an item that will never
   // come, the book is over.
   if (alive() && s.waiting && s.playIdx >= s.items.length) finishPocketBook();
+}
+
+// Audio for one producer item, retrying until it arrives or the stream
+// stops. Returns null when playback was stopped (or had to stop).
+async function fetchPocketBuffer(s, item, warm, alive) {
+  for (let attempt = 0; ; attempt++) {
+    const t0 = performance.now();
+    try {
+      let arrayBuffer = attempt === 0 && warm ? await warm.catch(() => null) : null;
+      if (!alive()) return null;
+      if (!arrayBuffer) {
+        arrayBuffer = await pocketTts(s.base, s.voice, item.text, pocketTimeoutMs(s.msPerChar, item.text.length), s.ctl.signal);
+        if (!alive()) return null;
+        const msPerChar = (performance.now() - t0) / Math.max(1, item.text.length);
+        s.msPerChar = state.pocketMsPerChar = s.msPerChar * 0.6 + msPerChar * 0.4;
+      }
+      const buffer = await getAudioCtx().decodeAudioData(arrayBuffer);
+      if (!alive()) return null;
+      if (s.stalled) pocketRecovered(s);
+      return buffer;
+    } catch (e) {
+      if (!alive()) return null;
+      if (pocketRefused(e)) {
+        setStatus(`The natural voice turned this down (${e.message}). Try again, or choose "This device's voice" under Voice.`, "err");
+        stopInternal();
+        return null;
+      }
+      // The server answers but can't voice this bit of text: after a few
+      // tries, skip it rather than stop the book.
+      if ((e.status >= 500 || e.name === "EncodingError") && attempt >= 3) {
+        console.warn("Pocket: skipping text the server could not voice:", item.text, e);
+        if (s.stalled) pocketRecovered(s);
+        return getAudioCtx().createBuffer(1, 2400, 24000); // 0.1 s of silence
+      }
+      console.warn(`Pocket request failed (attempt ${attempt + 1}):`, e.message || e);
+      s.stalled = true;
+      if (s.waiting) setStatus(POCKET_STUCK_MSG, "stuck");
+      await new Promise((r) => setTimeout(r, POCKET_RETRY_MS[Math.min(attempt, POCKET_RETRY_MS.length - 1)]));
+      if (!alive()) return null;
+    }
+  }
+}
+
+// The server answers again: clear the warning (reading resumes in
+// becameCurrent if playback had run dry).
+function pocketRecovered(s) {
+  s.stalled = false;
+  if (!s.waiting && state.isPlaying) setStatus(`Reading page ${state.currentPage} \u2026`, "quiet");
 }
 
 function makePocketSource(s, idx, rate) {
@@ -2122,6 +2218,7 @@ function playPocketItem(s, idx, offset) {
     if (n && n.source) { n.source.onended = null; try { n.source.stop(); } catch (_) {} }
   }
   s.next = null;
+  clearTimeout(s.waitTimer);
   const rate = pocketRate();
   const source = makePocketSource(s, idx, rate);
   s.cur = { idx, source, startCtx: ctx.currentTime, offset, rate };
@@ -2166,7 +2263,17 @@ function onPocketEnded(s, source) {
   } else {
     s.playIdx = idx;
     s.waiting = true;
-    setStatus("Loading the voice …", "busy");
+    if (s.stalled) {
+      setStatus(POCKET_STUCK_MSG, "stuck");
+    } else {
+      setStatus("Loading the voice …", "busy");
+      clearTimeout(s.waitTimer);
+      s.waitTimer = setTimeout(() => {
+        if (pocketStream === s && s.waiting && state.isPlaying) {
+          setStatus(s.stalled ? POCKET_STUCK_MSG : "Waiting for the natural voice server \u2026", "stuck");
+        }
+      }, POCKET_WAIT_NOTICE_MS);
+    }
   }
 }
 
