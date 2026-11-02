@@ -3622,6 +3622,7 @@ function collectBugContext() {
         producerPage: p.prodPage,
         playingPage: p.cur && p.items[p.cur.idx] ? p.items[p.cur.idx].page : null,
         msPerChar: Math.round(p.msPerChar),
+        stalled: p.stalled, // the voice server's last request failed; retrying
       };
     }
   } catch (e) {
