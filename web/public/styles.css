@@ -836,3 +836,10 @@ input[type="range"]:disabled { cursor: default; opacity: 0.55; }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* ----- Report a bug ----- */
+.bug-text { min-height: 120px; padding: var(--space-3); line-height: 1.45; resize: vertical; }
+.bug-include { display: flex; gap: var(--space-3); align-items: flex-start; font-size: var(--text-sm); color: var(--color-fg-muted); cursor: pointer; }
+.bug-include input { margin-top: 3px; width: 18px; height: 18px; flex: none; accent-color: var(--color-accent); }
+.bug-error { color: var(--color-err); }
+.bug-actions { display: flex; justify-content: flex-end; margin-top: var(--space-4); }

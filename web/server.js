@@ -193,6 +193,16 @@ const finderAddLimiter = rateLimit({
   message: { error: "Too many books at once, try again in a minute." },
 });
 
+// Bug reports: a person only needs a few; this stops a stuck script from
+// filling the table.
+const bugReportLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  limit: 10,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { error: "Thanks, we have your reports. Try again in a while." },
+});
+
 // ----- Multer setup (local storage only): per-user destination, sanitized filename -----
 const upload = multer({
   storage: multer.diskStorage({
@@ -715,6 +725,35 @@ app.delete("/api/books/:id/bookmarks/:bookmarkId", requireAuth, wrap(async (req,
   );
   if (gone.length === 0) return res.status(404).json({ error: "Not found" });
   res.json({ ok: true });
+}));
+
+// ----- Bug reports -----
+// The "Report a bug" sheet posts what went wrong plus what the app was
+// doing (book, page, voice, recent errors). Write-only from the app: the
+// daily bug fixer reads them straight from the database (BUG_REPORTS.md).
+
+const BUG_DESCRIPTION_MAX = 4000;
+const BUG_CONTEXT_MAX = 16 * 1024;
+
+app.post("/api/bug-reports", requireAuth, bugReportLimiter, wrap(async (req, res) => {
+  const { description, context } = req.body || {};
+  if (typeof description !== "string" || !description.trim()) {
+    return res.status(400).json({ error: "Tell us what went wrong" });
+  }
+  let ctx = null;
+  if (context != null) {
+    if (typeof context !== "object" || Array.isArray(context)) return res.status(400).json({ error: "context must be an object" });
+    ctx = JSON.stringify(context);
+    if (ctx.length > BUG_CONTEXT_MAX) return res.status(400).json({ error: "context is too large" });
+  }
+  const ua = String(req.get("user-agent") || "").slice(0, 500) || null;
+  const report = await queryOne(
+    `INSERT INTO bug_reports (user_id, description, context, user_agent, created_at, status)
+     VALUES (?, ?, ?, ?, ?, 'new')
+     RETURNING id, created_at`,
+    [req.session.userId, description.trim().slice(0, BUG_DESCRIPTION_MAX), ctx, ua, Date.now()]
+  );
+  res.status(201).json({ report });
 }));
 
 // ----- ElevenLabs TTS proxy -----

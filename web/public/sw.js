@@ -2,8 +2,8 @@
 // Network first for the app's own files, so a deploy shows up on the next
 // load; the cached copy is only a fallback. /api and other origins are
 // never touched.
-const CACHE = "agr-shell-v1";
-const SHELL = ["/", "/index.html", "/styles.css", "/app.js", "/theme.js", "/icon.svg", "/manifest.webmanifest"];
+const CACHE = "agr-shell-v2";
+const SHELL = ["/", "/index.html", "/styles.css", "/app.js", "/theme.js", "/bugtrap.js", "/icon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
