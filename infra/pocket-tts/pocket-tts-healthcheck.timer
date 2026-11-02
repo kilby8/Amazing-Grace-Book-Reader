@@ -1,12 +1,12 @@
 [Unit]
-Description=Weekly Pocket TTS health check
+Description=Pocket TTS health check every 2 minutes
 
 [Timer]
-# Sundays 03:00 UTC - low-traffic window, won't fight anything user-facing.
-OnCalendar=Sun *-*-* 03:00:00 UTC
-# Small jitter so multiple weekly timers don't all fire at the same second.
-RandomizedDelaySec=300
-Persistent=true
+# Model load takes a while after a restart; give it 5 minutes before the
+# first check, then check every 2 minutes.
+OnBootSec=5min
+OnUnitActiveSec=2min
+AccuracySec=10s
 
 [Install]
 WantedBy=timers.target

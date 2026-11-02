@@ -90,6 +90,9 @@ function wav(seconds) {
 const requested = [];
 let busyUntil = 0;
 let maxInFlight = 0, inFlight = 0;
+// While Date.now() < hangUntil the server takes requests and never answers,
+// as the hosted one did when it froze on 2026-11-02.
+let hangUntil = 0, hungRequests = 0;
 const pocket = http.createServer((req, res) => {
   const cors = { "Access-Control-Allow-Origin": "*" };
   if (req.method === "OPTIONS") { res.writeHead(204, { ...cors, "Access-Control-Allow-Headers": "*" }); return res.end(); }
@@ -100,6 +103,7 @@ const pocket = http.createServer((req, res) => {
     const body = Buffer.concat(chunks).toString("utf8");
     const m = body.match(/name="text"\r\n\r\n([\s\S]*?)\r\n--/);
     const text = m ? m[1] : "";
+    if (Date.now() < hangUntil) { hungRequests++; return; }
     requested.push(text);
     inFlight++; maxInFlight = Math.max(maxInFlight, inFlight);
     // One at a time, like the real server: each request waits for the last.
@@ -300,6 +304,28 @@ try {
   const warmReqs = requested.slice(reqBefore - 1);
   check("warm audio is used, not requested again", new Set(warmReqs).size === warmReqs.length, warmReqs.map((t) => t.slice(0, 30)).join(" | "));
   await page.click("#stop");
+
+  // ----- Server freezes mid-book, then comes back -----
+  // The reader must say so on screen, keep retrying, and carry on by
+  // itself once the server answers, without the listener touching Play.
+  await page.evaluate(() => { window.__plays = []; const j = document.getElementById("pageJump"); j.value = "3"; j.dispatchEvent(new Event("change")); });
+  await page.waitForFunction(() => window.__plays.length >= 2, { timeout: 60000, polling: 100 });
+  const HANG_MS = 45000;
+  hangUntil = Date.now() + HANG_MS;
+  const hungAt = Date.now();
+  // Played out what it had; now silent and waiting on the frozen server.
+  const stuckSeen = await page.waitForFunction(
+    () => /isn't answering|Waiting for the natural voice/.test(document.getElementById("status").textContent) && document.getElementById("status").classList.contains("toast-show"),
+    { timeout: HANG_MS, polling: 200 }).then(() => true).catch(() => false);
+  check("frozen server: a message says why it's quiet", stuckSeen, await status2());
+  await new Promise((r) => setTimeout(r, Math.max(0, hangUntil - Date.now()) + 1000));
+  check("…and it stays on screen", await page.$eval("#status", (n) => n.classList.contains("toast-show") && /isn't answering|Waiting/.test(n.textContent)), await status2());
+  const playsBefore = await playsNow();
+  await page.waitForFunction(() => /end of the document/i.test(document.getElementById("status").textContent),
+    { timeout: 180000, polling: 200 }).catch(() => {});
+  const after = await page.evaluate(() => window.__plays.length);
+  console.log(`INFO  frozen for ${(HANG_MS / 1000).toFixed(0)} s: ${hungRequests} requests got no answer; ${after - playsBefore} chunks played after it came back, ${((Date.now() - hungAt) / 1000).toFixed(0)} s in all`);
+  check("frozen server: reading carries on by itself once it's back", after > playsBefore && /end of the document/i.test(await status2()), await status2());
 
   check("no page errors", errors.length === 0, errors.join(" | "));
 } catch (e) {

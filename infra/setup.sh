@@ -267,7 +267,7 @@ if [[ "${DEPLOY_POCKET:-1}" == "1" && -d "$APP_DIR/infra/pocket-tts" ]]; then
   sudo systemctl enable pocket-tts
   sudo systemctl restart pocket-tts
 
-  # Weekly health check (lands in syslog, non-zero exit if pocket-tts is down).
+  # Health check every 2 minutes; restarts pocket-tts if it stops answering.
   sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-healthcheck.service" /etc/systemd/system/
   sudo cp "$APP_DIR/infra/pocket-tts/pocket-tts-healthcheck.timer"    /etc/systemd/system/
   sudo systemctl daemon-reload

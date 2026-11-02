@@ -23,17 +23,20 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import asyncio
 import io
 import logging
+import os
 import tempfile
+import time
 from pathlib import Path
 from queue import Queue
 from typing import Annotated
 
 import uvicorn
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from pocket_tts import TTSModel
 from pocket_tts.data.audio import stream_audio_chunks
@@ -41,6 +44,13 @@ from pocket_tts.utils.utils import _ORIGINS_OF_PREDEFINED_VOICES
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("pocket-tts-local")
+
+# A single generation should take well under a minute (the reader asks for
+# at most ~600 characters, about 20 s of work). One that runs past this is
+# stuck: the process exits and systemd starts a fresh one. On 2026-11-02 the
+# server froze for good with generation running on the event loop, so
+# /health stopped answering too and nothing ever restarted it.
+GENERATION_TIMEOUT_S = float(os.environ.get("POCKET_GENERATION_TIMEOUT_S", "120"))
 
 
 def build_app(tts: TTSModel, default_voice: str | None) -> FastAPI:
@@ -61,6 +71,11 @@ def build_app(tts: TTSModel, default_voice: str | None) -> FastAPI:
         allow_headers=["*"],
     )
     app.state.tts_model = tts
+    # One generation at a time (the model is not shared safely between
+    # threads); it runs in a worker thread so the event loop stays free to
+    # answer /health and to notice callers that gave up.
+    gen_lock = asyncio.Lock()
+    app.state.busy_since = None
 
     @app.on_event("startup")
     async def _warm_default_voice() -> None:
@@ -77,8 +92,11 @@ def build_app(tts: TTSModel, default_voice: str | None) -> FastAPI:
             log.error("failed to pre-encode default voice '%s': %s", default_voice, exc)
 
     @app.get("/health")
-    async def health() -> dict[str, str]:
-        return {"status": "healthy", "model": tts.config.mimi.sample_rate and "loaded" or "loaded"}
+    async def health():
+        busy = app.state.busy_since
+        if busy is not None and time.monotonic() - busy > GENERATION_TIMEOUT_S:
+            return JSONResponse({"status": "stuck", "busy_s": round(time.monotonic() - busy)}, status_code=503)
+        return {"status": "healthy", "model": "loaded", "busy": "yes" if busy is not None else "no"}
 
     @app.get("/")
     async def root() -> dict[str, str]:
@@ -147,18 +165,42 @@ def build_app(tts: TTSModel, default_voice: str | None) -> FastAPI:
             raw = bytes(raw)
         return raw
 
-    def _stream_response(text: str, model_state: dict):
-        from fastapi.responses import Response
+    def _wav_response(wav: bytes) -> Response:
         return Response(
-            content=_build_complete_wav(text, model_state),
+            content=wav,
             media_type="audio/wav",
             headers={
                 "Content-Disposition": "attachment; filename=generated_speech.wav",
             },
         )
 
+    def _voice_state(eff_voice_url: str | None, voice_wav_bytes: bytes | None, suffix: str) -> dict:
+        if voice_wav_bytes is None:
+            log.info("voice_url=%s (using cached or freshly-encoded state)", eff_voice_url)
+            return tts.get_state_for_audio_prompt(eff_voice_url)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
+            f.write(voice_wav_bytes)
+            tmp = f.name
+        try:
+            return tts.get_state_for_audio_prompt(Path(tmp), truncate=True)
+        finally:
+            Path(tmp).unlink(missing_ok=True)
+
+    async def _run_generation(work, *args):
+        """Run blocking model work in a thread; exit the process if it hangs."""
+        app.state.busy_since = time.monotonic()
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(work, *args), timeout=GENERATION_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            log.critical("generation ran past %ss; exiting so systemd restarts a fresh server", GENERATION_TIMEOUT_S)
+            logging.shutdown()
+            os._exit(3)
+        finally:
+            app.state.busy_since = None
+
     @app.post("/tts")
     async def tts_endpoint(
+        request: Request,
         text: Annotated[str, Form(...)],
         voice_url: Annotated[str | None, Form()] = None,
         voice_wav: Annotated[UploadFile | None, File()] = None,
@@ -176,42 +218,41 @@ def build_app(tts: TTSModel, default_voice: str | None) -> FastAPI:
                 detail="no voice specified and no default voice configured on the server",
             )
 
-        try:
-            if eff_voice_url is not None and voice_wav is None:
-                # Accept a built-in voice name, http(s)://, hf://, or a local path
-                if eff_voice_url not in _ORIGINS_OF_PREDEFINED_VOICES and not (
-                    eff_voice_url.startswith("http://")
-                    or eff_voice_url.startswith("https://")
-                    or eff_voice_url.startswith("hf://")
-                    or Path(eff_voice_url).is_file()
-                ):
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "voice_url must be a built-in name, an http(s):// URL, "
-                            "an hf:// path, or a local file path"
-                        ),
-                    )
-                log.info("voice_url=%s (using cached or freshly-encoded state)", eff_voice_url)
-                model_state = tts.get_state_for_audio_prompt(eff_voice_url)
-            else:
-                # voice_wav path
-                assert voice_wav is not None
-                suffix = Path(voice_wav.filename or "voice.wav").suffix or ".wav"
-                with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as f:
-                    f.write(voice_wav.file.read())
-                    tmp = f.name
-                try:
-                    model_state = tts.get_state_for_audio_prompt(Path(tmp), truncate=True)
-                finally:
-                    Path(tmp).unlink(missing_ok=True)
-        except HTTPException:
-            raise
-        except Exception as exc:
-            log.exception("voice setup failed")
-            raise HTTPException(status_code=500, detail=f"voice setup failed: {exc}") from exc
+        voice_wav_bytes = None
+        suffix = ".wav"
+        if eff_voice_url is not None and voice_wav is None:
+            # Accept a built-in voice name, http(s)://, hf://, or a local path
+            if eff_voice_url not in _ORIGINS_OF_PREDEFINED_VOICES and not (
+                eff_voice_url.startswith("http://")
+                or eff_voice_url.startswith("https://")
+                or eff_voice_url.startswith("hf://")
+                or Path(eff_voice_url).is_file()
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "voice_url must be a built-in name, an http(s):// URL, "
+                        "an hf:// path, or a local file path"
+                    ),
+                )
+        else:
+            assert voice_wav is not None
+            suffix = Path(voice_wav.filename or "voice.wav").suffix or ".wav"
+            voice_wav_bytes = await voice_wav.read()
 
-        return _stream_response(text, model_state)
+        async with gen_lock:
+            # A caller that gave up while waiting its turn (the reader moved
+            # on, or timed out) gets nothing: don't spend the server on it.
+            if await request.is_disconnected():
+                log.info("caller left before its turn; skipping %d chars", len(text))
+                return Response(status_code=499)
+            try:
+                model_state = await _run_generation(_voice_state, eff_voice_url, voice_wav_bytes, suffix)
+            except Exception as exc:
+                log.exception("voice setup failed")
+                raise HTTPException(status_code=500, detail=f"voice setup failed: {exc}") from exc
+            wav = await _run_generation(_build_complete_wav, text, model_state)
+        return _wav_response(wav)
 
     return app
 
