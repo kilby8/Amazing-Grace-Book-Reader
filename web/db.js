@@ -27,6 +27,12 @@
 //           reading_progress), note (optional), created_at. Per reader.
 //   library_saves: (user_id, book_id) pk, saved_at. Public books a reader
 //           kept on their own shelf; see PUBLIC_LIBRARY.md.
+//   bug_reports: id, user_id (null once the account is deleted), description,
+//           context (JSON text: book, page, voice, recent errors; see
+//           collectBugContext in app.js), user_agent, created_at,
+//           status ('new'|'triaged'|'fixing'|'fixed'|'wontfix'|'duplicate'),
+//           resolution (note from whoever handled it), pr_url, updated_at.
+//           Read by the daily bug fixer (see BUG_REPORTS.md), never by the app.
 //   sessions: login sessions, see session-store.js
 //   storage_tickets (Postgres only): short-lived Storage capabilities, see
 //           storage.js
@@ -123,6 +129,19 @@ function sqlite() {
       PRIMARY KEY (user_id, book_id)
     );
     CREATE INDEX IF NOT EXISTS library_saves_book_idx ON library_saves(book_id);
+    CREATE TABLE IF NOT EXISTS bug_reports (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      description TEXT NOT NULL,
+      context     TEXT,
+      user_agent  TEXT,
+      created_at  INTEGER NOT NULL,
+      status      TEXT NOT NULL DEFAULT 'new',
+      resolution  TEXT,
+      pr_url      TEXT,
+      updated_at  INTEGER
+    );
+    CREATE INDEX IF NOT EXISTS bug_reports_status_idx ON bug_reports(status, created_at);
   `);
   // Partial index for the public feed (only rows where it matters).
   _sqlite.exec(

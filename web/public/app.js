@@ -24,6 +24,14 @@ const els = {
   // Top-level screens
   status: $("status"),
   logoutBtn: $("logoutBtn"),
+  bugBtn: $("bugBtn"),
+  bugDialog: $("bugDialog"),
+  bugForm: $("bugForm"),
+  bugText: $("bugText"),
+  bugInclude: $("bugInclude"),
+  bugError: $("bugError"),
+  bugSend: $("bugSend"),
+  bugClose: $("bugClose"),
   authScreen: $("authScreen"),
   libraryScreen: $("libraryScreen"),
   readerScreen: $("readerScreen"),
@@ -232,6 +240,7 @@ let toastTimer = null;
 // already shows what is playing).
 function setStatus(msg, kind = "") {
   const quiet = kind === "quiet";
+  if (kind === "err" && msg && window.agrBugLog) window.agrBugLog.note("toast", msg);
   els.status.textContent = msg;
   els.status.dataset.state = quiet ? "busy" : kind || "idle";
   clearTimeout(toastTimer);
@@ -254,6 +263,7 @@ function showScreen(name) {
   if (name === "reader" && els.readerScreen) els.readerScreen.hidden = false;
   els.logoutBtn.hidden = !(state.user && (name === "library" || name === "public" || name === "find" || name === "reader"));
   els.accountName.hidden = els.logoutBtn.hidden;
+  els.bugBtn.hidden = els.logoutBtn.hidden;
   els.accountName.textContent = state.user ? state.user.username : "";
   syncMiniPlayer();
   window.scrollTo(0, 0);
@@ -3454,6 +3464,102 @@ setInterval(() => {
     updateTimes();
   }
 }, 250);
+
+// ----- Report a bug -----
+// What the app was doing when the reader hit the problem. No book text
+// and no account details beyond the user id the server already knows.
+function collectBugContext() {
+  const ctx = {
+    at: new Date().toISOString(),
+    url: location.pathname + location.hash,
+    screen: state.screen,
+    online: navigator.onLine,
+    viewport: `${window.innerWidth}x${window.innerHeight}@${window.devicePixelRatio || 1}`,
+    standalone: Boolean(window.matchMedia && window.matchMedia("(display-mode: standalone)").matches),
+    theme: document.documentElement.dataset.theme || "auto",
+  };
+  try {
+    const b = state.currentBook;
+    if (state.currentBookId) {
+      ctx.book = {
+        id: state.currentBookId,
+        title: (b && b.title) || state.bookTitle || null,
+        kind: b && b.kind,
+        owned: b ? b.owned !== false : null,
+        source: (b && b.source) || null,
+        size: b && b.size,
+      };
+      ctx.page = state.currentPage;
+      ctx.totalPages = state.pdfDoc ? state.pdfDoc.numPages : null;
+      ctx.charOffset = state.lastCharOffset;
+      ctx.pageTextChars = (state.pagesText[state.currentPage - 1] || "").length;
+    }
+    ctx.playback = {
+      engine: els.engine.value,
+      voice: els.engine.value === "pocket" ? els.pocketVoice.value.trim()
+        : els.engine.value === "browser" ? els.browserVoice.value
+        : els.elevenLabsVoice.value.trim(),
+      pocketServer: els.engine.value === "pocket" ? els.pocketUrl.value.trim() : undefined,
+      playing: state.isPlaying,
+      paused: state.isPaused,
+      audioContext: audioCtx ? audioCtx.state : null,
+    };
+    if (pocketStream) {
+      const p = pocketStream;
+      ctx.playback.stream = {
+        items: p.items.length,
+        buffered: p.items.filter((it) => it && it.buffer).length,
+        playIdx: p.playIdx,
+        waiting: p.waiting,
+        done: p.done,
+        producerPage: p.prodPage,
+        playingPage: p.cur && p.items[p.cur.idx] ? p.items[p.cur.idx].page : null,
+        msPerChar: Math.round(p.msPerChar),
+      };
+    }
+  } catch (e) {
+    ctx.contextError = String(e && e.message || e);
+  }
+  ctx.recent = window.agrBugLog ? window.agrBugLog.entries() : [];
+  return ctx;
+}
+
+function openBugDialog() {
+  els.bugError.hidden = true;
+  els.bugSend.disabled = false;
+  if (typeof els.bugDialog.showModal === "function") els.bugDialog.showModal();
+  else els.bugDialog.setAttribute("open", "");
+  els.bugText.focus();
+}
+els.bugBtn.addEventListener("click", openBugDialog);
+els.bugClose.addEventListener("click", () => els.bugDialog.close());
+els.bugDialog.addEventListener("click", (e) => { if (e.target === els.bugDialog) els.bugDialog.close(); });
+els.bugForm.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const description = els.bugText.value.trim();
+  if (!description) {
+    els.bugError.textContent = "Tell us what went wrong first.";
+    els.bugError.hidden = false;
+    els.bugText.focus();
+    return;
+  }
+  els.bugSend.disabled = true;
+  els.bugError.hidden = true;
+  try {
+    await api("/api/bug-reports", {
+      method: "POST",
+      body: JSON.stringify({ description, context: els.bugInclude.checked ? collectBugContext() : null }),
+    });
+    els.bugText.value = "";
+    els.bugDialog.close();
+    setStatus("Thanks. Your report was sent.", "ok");
+  } catch (err) {
+    els.bugError.textContent = `Couldn't send it: ${err.message}`;
+    els.bugError.hidden = false;
+  } finally {
+    els.bugSend.disabled = false;
+  }
+});
 
 // ----- install as an app -----
 if ("serviceWorker" in navigator && location.protocol === "https:") {

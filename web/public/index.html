@@ -14,6 +14,7 @@
   <link rel="icon" href="icon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="icon-192.png" />
   <script src="theme.js"></script>
+  <script src="bugtrap.js"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link
@@ -49,6 +50,7 @@
       <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
       <symbol id="i-globe" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></g></symbol>
       <symbol id="i-upload" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/><path d="M12 13V7M9 10l3-3 3 3"/></g></symbol>
+      <symbol id="i-bug" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="8" width="10" height="12" rx="5"/><path d="M9.5 8V6.5a2.5 2.5 0 0 1 5 0V8M12 12v8M3.5 13H7M17 13h3.5M4.5 8.5 7.5 10M19.5 8.5 16.5 10M4.5 19l3-2M19.5 19l-3-2"/></g></symbol>
       <symbol id="open-book" viewBox="0 0 120 80">
         <ellipse cx="60" cy="44" rx="58" ry="32" fill="currentColor" fill-opacity="0.14"/>
         <path d="M58 22 C 40 16, 22 18, 12 22 L 12 66 C 22 62, 40 60, 58 66 Z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
@@ -74,6 +76,9 @@
         <button id="themeToggle" type="button" class="btn-icon-round" aria-label="Switch to dark theme" title="Theme">
           <svg class="theme-icon-dark" width="20" height="20" aria-hidden="true"><use href="#i-moon"/></svg>
           <svg class="theme-icon-light" width="20" height="20" aria-hidden="true"><use href="#i-sun"/></svg>
+        </button>
+        <button id="bugBtn" type="button" class="btn-icon-round" aria-label="Report a bug" title="Report a bug" hidden>
+          <svg width="20" height="20" aria-hidden="true"><use href="#i-bug"/></svg>
         </button>
         <span id="accountName" class="account-name" hidden></span>
         <button id="logoutBtn" type="button" class="btn btn-ghost btn-small" hidden>Sign out</button>
@@ -449,6 +454,29 @@
           <span>Find free books</span>
         </button>
       </div>
+    </form>
+  </dialog>
+
+  <!-- Report a bug -->
+  <dialog id="bugDialog" class="sheet" aria-labelledby="bugDialogTitle">
+    <form id="bugForm" method="dialog" class="sheet-inner">
+      <div class="sheet-head">
+        <h2 id="bugDialogTitle">Report a bug</h2>
+        <button type="button" id="bugClose" class="btn-icon-round" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </div>
+      <div class="field">
+        <label for="bugText" class="field-label">What went wrong?</label>
+        <textarea id="bugText" class="field-control bug-text" rows="5" maxlength="4000" placeholder="For example: the voice stopped after page 2 and Play did nothing."></textarea>
+      </div>
+      <label class="bug-include">
+        <input id="bugInclude" type="checkbox" checked />
+        <span>Include what the app was doing: the book, page, voice, your browser and recent errors. Not the book's text.</span>
+      </label>
+      <p id="bugError" class="field-hint bug-error" role="alert" hidden></p>
+      <div class="bug-actions">
+        <button type="submit" id="bugSend" class="btn btn-primary">Send report</button>
+      </div>
+      <p class="field-hint">Reports are checked every day, and fixes go out after a review.</p>
     </form>
   </dialog>
 
