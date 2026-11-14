@@ -110,6 +110,8 @@ app.use(
           "'self'",
           "https://cdnjs.cloudflare.com",
           "https://cdn.jsdelivr.net",
+          // Scan pages: the OCR engine (Tesseract.js) is WebAssembly.
+          "'wasm-unsafe-eval'",
         ],
         styleSrc: [
           "'self'",
@@ -124,6 +126,8 @@ app.use(
           "http://127.0.0.1:*",
           "http://localhost:*",
           POCKET_ORIGIN,
+          // Scan pages fetches the OCR engine and its English data from here.
+          "https://cdn.jsdelivr.net",
           ...(storage.MODE === "supabase" ? [storage.SUPABASE_URL] : []),
         ],
         mediaSrc: ["'self'", "blob:"],
@@ -225,6 +229,11 @@ function detectKind(originalName) {
   if (ext === ".pdf") return "pdf";
   if (ext === ".epub") return "epub";
   return null;
+}
+
+// A title or author the browser sent, or null.
+function cleanMeta(v) {
+  return typeof v === "string" && v.trim() ? v.trim().slice(0, 200) : null;
 }
 
 function deriveTitle(originalName) {
@@ -338,8 +347,8 @@ app.post("/api/books", requireAuth, (req, res, next) => {
     return res.status(400).json({ error: "Only PDF and EPUB files are supported" });
   }
   const book = await insertBook(req.session.userId, {
-    title: (req.body && req.body.title) || deriveTitle(req.file.originalname),
-    author: (req.body && req.body.author) || null,
+    title: cleanMeta(req.body && req.body.title) || deriveTitle(req.file.originalname),
+    author: cleanMeta(req.body && req.body.author),
     kind,
     filename: req.file.filename,
     size: req.file.size,
@@ -379,8 +388,8 @@ app.post("/api/books/uploads/complete", requireAuth, wrap(async (req, res) => {
   await storage.finishUpload(objectPath);
   delete req.session.pendingUploads[objectPath];
   const book = await insertBook(req.session.userId, {
-    title: title || deriveTitle(pending.filename),
-    author: author || null,
+    title: cleanMeta(title) || deriveTitle(pending.filename),
+    author: cleanMeta(author),
     kind: pending.kind,
     filename: objectPath,
     size,

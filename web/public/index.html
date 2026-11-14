@@ -50,6 +50,10 @@
       <symbol id="i-check" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" d="M5 12.5l4.5 4.5L19 7.5"/></symbol>
       <symbol id="i-globe" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a14 14 0 0 1 0 18M12 3a14 14 0 0 0 0 18"/></g></symbol>
       <symbol id="i-upload" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z"/><path d="M12 13V7M9 10l3-3 3 3"/></g></symbol>
+      <symbol id="i-up" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6 15l6-6 6 6"/></symbol>
+      <symbol id="i-down" viewBox="0 0 24 24"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" d="M6 9l6 6 6-6"/></symbol>
+      <symbol id="i-rotate" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 11a8 8 0 1 1-2.6-5.9"/><path d="M20 4v5h-5"/></g></symbol>
+      <symbol id="i-camera" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M3.5 8.5a2 2 0 0 1 2-2h2.2l1.5-2h5.6l1.5 2h2.2a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.6"/></g></symbol>
       <symbol id="i-bug" viewBox="0 0 24 24"><g fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="8" width="10" height="12" rx="5"/><path d="M9.5 8V6.5a2.5 2.5 0 0 1 5 0V8M12 12v8M3.5 13H7M17 13h3.5M4.5 8.5 7.5 10M19.5 8.5 16.5 10M4.5 19l3-2M19.5 19l-3-2"/></g></symbol>
       <symbol id="open-book" viewBox="0 0 120 80">
         <ellipse cx="60" cy="44" rx="58" ry="32" fill="currentColor" fill-opacity="0.14"/>
@@ -142,11 +146,17 @@
           <p class="eyebrow" id="libraryEyebrow">Library</p>
           <h2 class="library-greeting" id="libraryGreeting">Welcome back.</h2>
         </div>
-        <button id="uploadPickBtn" type="button" class="btn btn-primary">
-          <svg width="18" height="18" aria-hidden="true"><use href="#i-plus"/></svg>
-          <span>Add book</span>
-        </button>
-        <input id="filePicker" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub" hidden />
+        <div class="library-actions">
+          <button id="scanOpenBtn" type="button" class="btn btn-ghost-strong">
+            <svg width="18" height="18" aria-hidden="true"><use href="#i-camera"/></svg>
+            <span>Scan<span class="scan-word-long"> pages</span></span>
+          </button>
+          <button id="uploadPickBtn" type="button" class="btn btn-primary">
+            <svg width="18" height="18" aria-hidden="true"><use href="#i-plus"/></svg>
+            <span>Add book</span>
+          </button>
+        </div>
+        <input id="filePicker" type="file" accept="application/pdf,.pdf,application/epub+zip,.epub,image/*" multiple hidden />
       </div>
 
       <!-- Continue listening -->
@@ -194,11 +204,11 @@
         </button>
       </div>
 
-      <section id="drop" class="drop" tabindex="0" role="button" aria-label="Add a book: drop a PDF or EPUB here, or press to choose a file">
+      <section id="drop" class="drop" tabindex="0" role="button" aria-label="Add a book: drop a PDF, EPUB or photos of pages here, or press to choose a file">
         <svg class="drop-icon" width="34" height="34" aria-hidden="true"><use href="#i-upload"/></svg>
         <div>
           <p class="drop-headline">Add a book</p>
-          <p class="drop-sub">Drop a PDF or EPUB here, or tap to choose one.</p>
+          <p class="drop-sub">Drop a PDF or EPUB here, or photos of book pages, or tap to choose.</p>
         </div>
       </section>
 
@@ -455,6 +465,58 @@
         </button>
       </div>
     </form>
+  </dialog>
+
+  <!-- Scan pages: photos of a printed book become a book you can play -->
+  <dialog id="scanDialog" class="sheet sheet-wide" aria-labelledby="scanDialogTitle">
+    <div class="sheet-inner">
+      <div class="sheet-head">
+        <h2 id="scanDialogTitle">Scan pages</h2>
+        <button type="button" id="scanClose" class="btn-icon-round" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </div>
+      <p class="muted scan-intro">Take a photo of each page, or choose photos you already have. They're read on this device, then saved to My books as one book you can listen to.</p>
+      <div class="scan-add">
+        <button type="button" id="scanTake" class="btn btn-primary">
+          <svg width="18" height="18" aria-hidden="true"><use href="#i-camera"/></svg>
+          <span>Take a photo</span>
+        </button>
+        <button type="button" id="scanChoose" class="btn btn-ghost-strong">
+          <svg width="18" height="18" aria-hidden="true"><use href="#i-plus"/></svg>
+          <span>Choose photos</span>
+        </button>
+        <input id="scanCamera" type="file" accept="image/*" capture="environment" hidden />
+        <input id="scanPicker" type="file" accept="image/*" multiple hidden />
+      </div>
+      <p class="field-hint scan-tips">For the best reading: one page per photo, flat and filling the frame, in good light, no flash.</p>
+      <p id="scanNote" class="field-hint" role="status" hidden></p>
+      <div id="scanProgress" class="scan-progress" hidden>
+        <span class="scan-progress-label" role="status"></span>
+        <div class="progress"><span id="scanBar"></span></div>
+      </div>
+      <div id="scanEmpty" class="scan-empty">
+        <p class="muted">No pages yet. Pages go in the order you add them, and you can move them after.</p>
+      </div>
+      <ol id="scanList" class="scan-list" aria-label="Pages" hidden></ol>
+      <div id="scanOrder" class="scan-order" hidden>
+        <p>The printed page numbers say these are out of order.</p>
+        <button type="button" id="scanOrderBtn" class="btn btn-ghost-strong btn-small">Put in page order</button>
+      </div>
+      <div class="scan-meta">
+        <div class="field">
+          <label for="scanTitle" class="field-label">Book title</label>
+          <input id="scanTitle" class="field-control" type="text" maxlength="200" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label for="scanAuthor" class="field-label">Author <span class="muted">(optional)</span></label>
+          <input id="scanAuthor" class="field-control" type="text" maxlength="200" autocomplete="off" />
+        </div>
+      </div>
+      <p id="scanError" class="field-hint bug-error" role="alert" hidden></p>
+      <div class="scan-foot">
+        <button type="button" id="scanDiscard" class="btn btn-ghost" hidden>Start over</button>
+        <button type="button" id="scanSave" class="btn btn-primary btn-large" disabled><span>Make book</span></button>
+      </div>
+    </div>
   </dialog>
 
   <!-- Report a bug -->
