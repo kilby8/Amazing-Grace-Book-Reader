@@ -15,6 +15,7 @@
 
 // pdf.js ships as an ES module from the CDN we pinned in index.html.
 import * as pdfjsLib from "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.min.mjs";
+import { initScanner, openScanner } from "./scan.js";
 pdfjsLib.GlobalWorkerOptions.workerSrc =
   "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.5.136/pdf.worker.min.mjs";
 
@@ -553,6 +554,21 @@ function escapeHtml(s) {
 }
 
 // Upload (drag-drop OR picker) - same handler for both library and reader
+const isImage = (f) => /^image\//.test(f.type || "") || /\.(jpe?g|png|webp|heic|heif|gif|bmp|tiff?)$/i.test(f.name || "");
+
+// A picker or drop with photos in it goes to the scanner; anything else is
+// one PDF or EPUB.
+function addFiles(fileList) {
+  const files = Array.from(fileList || []);
+  const photos = files.filter(isImage);
+  if (photos.length) {
+    if (!state.user) return setStatus("Sign in to save books", "err");
+    openScanner(photos);
+    return;
+  }
+  if (files[0]) uploadFile(files[0]);
+}
+
 async function uploadFile(file) {
   if (!state.user) {
     setStatus("Sign in to save books", "err");
@@ -560,7 +576,7 @@ async function uploadFile(file) {
   }
   const name = (file.name || "").toLowerCase();
   if (!name.endsWith(".pdf") && !name.endsWith(".epub")) {
-    setStatus("Only PDF and EPUB files are supported", "err");
+    setStatus("Only PDF and EPUB files, or photos of pages, are supported", "err");
     return;
   }
   setStatus(`Uploading ${file.name}…`, "busy");
@@ -576,15 +592,28 @@ async function uploadFile(file) {
   }
 }
 
+// The scanner's finished book: save it, then open it in the player. Errors
+// go back to the scanner, which keeps the pages so nothing is lost.
+async function saveScannedBook(file, meta) {
+  const book = await uploadBook(file, meta);
+  setStatus(`Saved "${book.title}"`, "ok");
+  state.books = [book, ...state.books.filter((b) => b.id !== book.id)];
+  if (state.screen === "library") renderLibrary();
+  openBookFromLibrary(book.id);
+  return book;
+}
+
 // The server says where the file goes: through it (local storage), or
 // straight to Supabase Storage, after which we tell it the upload is done.
-async function uploadBook(file) {
+async function uploadBook(file, meta = {}) {
   const target = await api("/api/books/uploads", {
     method: "POST",
     body: JSON.stringify({ filename: file.name, size: file.size }),
   });
   if (target.mode === "local") {
     const form = new FormData();
+    if (meta.title) form.append("title", meta.title);
+    if (meta.author) form.append("author", meta.author);
     form.append("file", file);
     const { book } = await api("/api/books", { method: "POST", body: form });
     return book;
@@ -604,7 +633,7 @@ async function uploadBook(file) {
   }
   const { book } = await api("/api/books/uploads/complete", {
     method: "POST",
-    body: JSON.stringify({ objectPath: target.objectPath }),
+    body: JSON.stringify({ objectPath: target.objectPath, title: meta.title || undefined, author: meta.author || undefined }),
   });
   return book;
 }
@@ -656,10 +685,11 @@ async function openBookFromLibrary(id) {
 
 els.uploadPickBtn.addEventListener("click", () => els.filePicker.click());
 els.filePicker.addEventListener("change", (e) => {
-  const f = e.target.files && e.target.files[0];
-  if (f) uploadFile(f);
+  addFiles(e.target.files);
   e.target.value = "";
 });
+initScanner({ saveBook: saveScannedBook });
+$("scanOpenBtn").addEventListener("click", () => openScanner());
 
 // ----- Public library -----
 // See PUBLIC_LIBRARY.md. Anyone signed in can listen to a shared book or
@@ -1106,8 +1136,7 @@ function wireDropzone() {
     })
   );
   els.drop.addEventListener("drop", (e) => {
-    const f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
-    if (f) uploadFile(f);
+    if (e.dataTransfer && e.dataTransfer.files) addFiles(e.dataTransfer.files);
   });
   // The library drop zone opens the picker on click/Enter; the reader
   // drop zone does the same (the picker re-uses the library filePicker).
@@ -1305,7 +1334,10 @@ async function loadEpubFile(file) {
       pages.push(text);
       chapterTitles.push(chapterTitle);
     }
-    state.pdfDoc = { numPages: pages.length, _kind: "epub" };
+    // A book made with Scan pages has one spine item per printed page, so
+    // it counts in pages, not chapters.
+    const scanned = /<dc:source>Scanned from photos/.test(opfText);
+    state.pdfDoc = { numPages: pages.length, _kind: "epub", _pages: scanned };
     state.pagesText = pages;
     state.pagePrintNumbers = pagePrintNumbers;
     state.chapterTitles = chapterTitles;
@@ -1322,7 +1354,7 @@ async function loadEpubFile(file) {
     els.prev.disabled = false;
     els.next.disabled = false;
     els.play.disabled = false;
-    setStatus(`Ready to play \u00b7 ${pages.length} chapter${pages.length === 1 ? "" : "s"}`, "ok");
+    setStatus(`Ready to play \u00b7 ${pages.length} ${loadedUnit().toLowerCase()}${pages.length === 1 ? "" : "s"}`, "ok");
     els.textOut.textContent = pages.map((p, i) => {
       const pn = pagePrintNumbers[i];
       const tag = pn ? `ch. ${i + 1} / p. ${pn}` : `ch. ${i + 1}`;
@@ -1483,7 +1515,7 @@ async function restoreProgress(bookId) {
       setCurrentPage(page);
       state.lastCharOffset = page === progress.page ? progress.char_offset : 0;
       state.resumeAt = { page, offset: state.lastCharOffset };
-      const unit = state.pdfDoc._kind === "epub" ? "chapter" : "page";
+      const unit = loadedUnit().toLowerCase();
       setStatus(`Picking up where you left off: ${unit} ${page}. Press Play to continue.`, "ok");
     }
   } catch (e) {
@@ -2848,7 +2880,7 @@ function updateMediaSession() {
   if (!MS) return;
   try {
     const total = state.pdfDoc ? state.pdfDoc.numPages : 0;
-    const unit = state.pdfDoc && state.pdfDoc._kind === "epub" ? "Chapter" : "Page";
+    const unit = loadedUnit();
     const chapter = state.chapterTitles && state.chapterTitles[state.currentPage - 1];
     MS.metadata = new MediaMetadata({
       title: chapter || state.bookTitle || "Amazing Grace Reader",
@@ -2912,7 +2944,9 @@ const store = {
   del(k) { try { localStorage.removeItem(k); } catch (_) {} },
 };
 const unitFor = (kind) => (kind === "epub" ? "Chapter" : "Page");
-const loadedUnit = () => (state.pdfDoc && state.pdfDoc._kind === "epub" ? "Chapter" : "Page");
+function loadedUnit() {
+  return state.pdfDoc && state.pdfDoc._kind === "epub" && !state.pdfDoc._pages ? "Chapter" : "Page";
+}
 
 // ----- covers -----
 // A book's own cover (EPUB cover image, or a PDF's first page when it
