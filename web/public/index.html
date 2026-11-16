@@ -84,6 +84,7 @@
         <button id="bugBtn" type="button" class="btn-icon-round" aria-label="Report a bug" title="Report a bug" hidden>
           <svg width="20" height="20" aria-hidden="true"><use href="#i-bug"/></svg>
         </button>
+        <button id="planBtn" type="button" class="plan-chip" data-plan="free" aria-label="Your plan" hidden>Free</button>
         <span id="accountName" class="account-name" hidden></span>
         <button id="logoutBtn" type="button" class="btn btn-ghost btn-small" hidden>Sign out</button>
       </nav>
@@ -195,6 +196,7 @@
         </div>
       </div>
 
+      <p id="planMeter" class="plan-meter" hidden></p>
       <ul id="bookGrid" class="cover-grid" aria-live="polite"></ul>
       <div id="librarySearchEmpty" class="search-empty" hidden>
         <p class="muted">No books on your shelf match that search.</p>
@@ -542,6 +544,49 @@
     </form>
   </dialog>
 
+  <!-- Plans (PLANS.md) -->
+  <dialog id="planDialog" class="sheet" aria-labelledby="planDialogTitle">
+    <div class="sheet-inner">
+      <div class="sheet-head">
+        <h2 id="planDialogTitle">Your plan</h2>
+        <button type="button" id="planClose" class="btn-icon-round" aria-label="Close"><svg width="20" height="20" aria-hidden="true"><use href="#i-close"/></svg></button>
+      </div>
+      <p id="planReason" class="plan-reason" role="alert" hidden></p>
+      <div class="plan-now">
+        <p class="eyebrow">You're on</p>
+        <p id="planName" class="plan-name">Free</p>
+        <ul id="planUsage" class="plan-usage"></ul>
+      </div>
+      <div id="planCompare" class="plan-compare">
+        <section class="plan-card" aria-labelledby="planFreeTitle">
+          <h3 id="planFreeTitle">Free</h3>
+          <p class="plan-price">$0</p>
+          <ul>
+            <li id="planFreeBooks">10 books of your own</li>
+            <li>Natural and device voices</li>
+            <li>Find books, public library, bookmarks, Scan pages</li>
+          </ul>
+        </section>
+        <section class="plan-card plan-card-pro" aria-labelledby="planProTitle">
+          <h3 id="planProTitle">Pro</h3>
+          <p class="plan-price"><span id="planPriceMonthly">$4.99</span><span class="plan-per"> a month</span></p>
+          <ul>
+            <li>Unlimited books</li>
+            <li id="planProMinutes">30 minutes of premium voice a month</li>
+            <li>Everything in Free</li>
+          </ul>
+        </section>
+      </div>
+      <div id="planActions" class="plan-actions">
+        <a id="planBuyMonthly" class="btn btn-primary btn-large" href="#" rel="noopener"><span>Go Pro, <span id="planBuyMonthlyPrice">$4.99</span> a month</span></a>
+        <a id="planBuyYearly" class="btn btn-ghost-strong" href="#" rel="noopener"><span>Or <span id="planBuyYearlyPrice">$39.99</span> a year</span></a>
+      </div>
+      <p id="planClosed" class="field-hint" hidden>Pro isn't open for sign-ups yet. Check back soon.</p>
+      <a id="planManage" class="btn btn-ghost-strong plan-manage" href="#" rel="noopener" hidden>Manage or cancel subscription</a>
+      <p id="planFoot" class="field-hint">Payments are handled by Stripe. Premium minutes refill on the 1st of each month.</p>
+    </div>
+  </dialog>
+
   <!-- Voice settings -->
   <dialog id="voiceDialog" class="sheet" aria-labelledby="voiceDialogTitle">
     <form method="dialog" class="sheet-inner">
@@ -556,7 +601,7 @@
           <select id="engine" class="field-control">
             <option value="pocket" selected>Natural voice (recommended)</option>
             <option value="browser">This device’s voice (works offline)</option>
-            <option value="elevenlabs">Premium voice (ElevenLabs, needs a plan)</option>
+            <option value="elevenlabs">Premium voice (ElevenLabs, Pro)</option>
           </select>
         </div>
       </div>

@@ -12,7 +12,8 @@
     "test:ui": "node test-ui.mjs",
     "test:public": "node test-public.mjs",
     "test:bugs": "node test-bugs.mjs",
-    "test:scan": "node test-scan.mjs"
+    "test:scan": "node test-scan.mjs",
+    "test:plans": "node test-plans.mjs"
   },
   "dependencies": {
     "bcrypt": "^5.1.1",

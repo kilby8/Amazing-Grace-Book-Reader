@@ -33,6 +33,10 @@
 //           status ('new'|'triaged'|'fixing'|'fixed'|'wontfix'|'duplicate'),
 //           resolution (note from whoever handled it), pr_url, updated_at.
 //           Read by the daily bug fixer (see BUG_REPORTS.md), never by the app.
+//   users.plan ('free'|'pro'|'admin'), plan_status, plan_renews_at,
+//           stripe_customer_id, stripe_subscription_id: see PLANS.md
+//   tts_usage: (user_id, month 'YYYY-MM') pk, chars. Premium voice used.
+//   stripe_events: id pk, received_at. Webhook events already applied.
 //   sessions: login sessions, see session-store.js
 //   storage_tickets (Postgres only): short-lived Storage capabilities, see
 //           storage.js
@@ -96,6 +100,25 @@ function sqlite() {
   if (!bookCols.has("source")) {
     _sqlite.exec("ALTER TABLE books ADD COLUMN source TEXT");
   }
+  const userCols = new Set(_sqlite.prepare("PRAGMA table_info(users)").all().map((c) => c.name));
+  if (!userCols.has("plan")) {
+    _sqlite.exec("ALTER TABLE users ADD COLUMN plan TEXT NOT NULL DEFAULT 'free' CHECK (plan IN ('free','pro','admin'))");
+  }
+  for (const [col, type] of [["plan_status", "TEXT"], ["plan_renews_at", "INTEGER"], ["stripe_customer_id", "TEXT"], ["stripe_subscription_id", "TEXT"]]) {
+    if (!userCols.has(col)) _sqlite.exec(`ALTER TABLE users ADD COLUMN ${col} ${type}`);
+  }
+  _sqlite.exec(`
+    CREATE TABLE IF NOT EXISTS tts_usage (
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      month   TEXT NOT NULL,
+      chars   INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY (user_id, month)
+    );
+    CREATE TABLE IF NOT EXISTS stripe_events (
+      id          TEXT PRIMARY KEY,
+      received_at INTEGER NOT NULL
+    );
+  `);
   _sqlite.exec(`
     CREATE TABLE IF NOT EXISTS reading_progress (
       user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,

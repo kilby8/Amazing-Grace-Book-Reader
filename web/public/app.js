@@ -229,6 +229,8 @@ async function api(path, opts = {}) {
   if (!res.ok) {
     const err = new Error((body && body.error) || `HTTP ${res.status}`);
     err.status = res.status;
+    if (body && body.code) err.code = body.code;
+    if (res.status === 402) onPlanLimit(err.message);
     throw err;
   }
   return body;
@@ -269,6 +271,7 @@ function showScreen(name) {
   els.logoutBtn.hidden = !(state.user && (name === "library" || name === "public" || name === "find" || name === "reader"));
   els.accountName.hidden = els.logoutBtn.hidden;
   els.bugBtn.hidden = els.logoutBtn.hidden;
+  if (els.planBtn) els.planBtn.hidden = els.logoutBtn.hidden || !state.plan;
   els.accountName.textContent = state.user ? state.user.username : "";
   syncMiniPlayer();
   window.scrollTo(0, 0);
@@ -300,7 +303,7 @@ async function init() {
     const me = await api("/api/me");
     if (me.user) {
       state.user = me.user;
-      await loadLibrary();
+      await Promise.all([loadLibrary(), loadPlan()]);
       showScreen("library");
       setStatus(`Signed in as ${me.user.username}`, "quiet");
     } else {
@@ -366,7 +369,7 @@ els.authForm.addEventListener("submit", async (e) => {
       body: JSON.stringify({ username, password }),
     });
     state.user = user;
-    await loadLibrary();
+    await Promise.all([loadLibrary(), loadPlan()]);
     showScreen("library");
     setStatus(`Welcome, ${user.username}`, "ok");
     els.authPassword.value = "";
@@ -387,6 +390,7 @@ els.logoutBtn.addEventListener("click", async () => {
   await unloadBook();
   state.user = null;
   state.books = [];
+  state.plan = null;
   showScreen("auth");
   setStatus("Signed out");
   els.authUsername.value = "";
@@ -417,6 +421,7 @@ function renderLibrary() {
     const n = state.books.length;
     els.libraryEyebrow.textContent = n === 0 ? "Library" : `${n} book${n === 1 ? "" : "s"} on your shelf`;
   }
+  renderPlanMeter();
   renderContinueCard();
   els.drop.classList.toggle("drop-big", state.books.length === 0);
   const shown = filteredSortedBooks();
@@ -2486,6 +2491,7 @@ async function fetchAndDecodeElevenLabsChunk(index) {
     if (state.abortElevenLabs || state.elevenLabsPlayToken !== myToken) return;
     if (!r.ok) {
       const j = await r.json().catch(() => ({}));
+      if (r.status === 402) onPlanLimit(j.error);
       throw new Error(j.error || `HTTP ${r.status}`);
     }
     const arrayBuffer = await r.arrayBuffer();
@@ -3716,3 +3722,131 @@ setAuthMode("login");
 
 // Kick off session check
 init();
+
+
+// ----- Plans: Free, Pro, Admin (PLANS.md) -----
+els.planBtn = $("planBtn");
+els.planDialog = $("planDialog");
+els.planMeter = $("planMeter");
+const PLAN_LABEL = { free: "Free", pro: "Pro", admin: "Admin" };
+
+async function loadPlan() {
+  try {
+    state.plan = await api("/api/plan");
+  } catch (_) {
+    state.plan = state.plan || null;
+  }
+  renderPlan();
+  return state.plan;
+}
+
+function ownedBookCount() {
+  return (state.books || []).filter((b) => b.owned !== false && b.owned !== 0).length;
+}
+
+function renderPlanMeter() {
+  const p = state.plan;
+  const meter = els.planMeter;
+  if (!meter) return;
+  if (!p || p.books.limit === null) { meter.hidden = true; return; }
+  const used = ownedBookCount();
+  const left = Math.max(0, p.books.limit - used);
+  meter.hidden = false;
+  meter.classList.toggle("plan-meter-full", left === 0);
+  meter.textContent = left === 0
+    ? `Your free shelf is full: ${used} of ${p.books.limit} books. `
+    : `${used} of ${p.books.limit} free books used. `;
+  const b = document.createElement("button");
+  b.type = "button";
+  b.textContent = left === 0 ? "Go Pro for unlimited books" : "See plans";
+  b.addEventListener("click", () => openPlanSheet());
+  meter.append(b);
+}
+
+function renderPlan() {
+  const p = state.plan;
+  if (els.planBtn) {
+    els.planBtn.hidden = !p || els.logoutBtn.hidden;
+    if (p) {
+      els.planBtn.textContent = PLAN_LABEL[p.plan] || "Free";
+      els.planBtn.dataset.plan = p.plan;
+      els.planBtn.setAttribute("aria-label", `Your plan: ${PLAN_LABEL[p.plan] || "Free"}`);
+    }
+  }
+  renderPlanMeter();
+  if (!p) return;
+  $("planName").textContent = p.plan === "admin" ? "Admin (everything, free)" : PLAN_LABEL[p.plan] || "Free";
+  const usage = $("planUsage");
+  usage.innerHTML = "";
+  const line = (t) => { const li = document.createElement("li"); li.textContent = t; usage.append(li); };
+  const owned = state.books && state.books.length ? ownedBookCount() : p.books.used;
+  line(p.books.limit === null ? `${owned} book${owned === 1 ? "" : "s"} of your own, no limit` : `${owned} of ${p.books.limit} books of your own`);
+  if (p.premium.limitMinutes === null) line("Premium voice: no limit");
+  else if (p.premium.limitMinutes === 0) line("Premium voice: part of Pro");
+  else line(`Premium voice: ${p.premium.leftMinutes} of ${p.premium.limitMinutes} minutes left this month`);
+  if (p.plan === "pro" && p.renewsAt) {
+    line(`${p.status === "canceled" ? "Ends" : "Renews"} ${new Date(p.renewsAt).toLocaleDateString(undefined, { month: "long", day: "numeric", year: "numeric" })}`);
+  }
+  $("planFreeBooks").textContent = `${p.pro.freeBookLimit} books of your own`;
+  $("planProMinutes").textContent = `${p.pro.premiumMinutes} minutes of premium voice a month`;
+  $("planPriceMonthly").textContent = p.pro.priceMonthly;
+  $("planBuyMonthlyPrice").textContent = p.pro.priceMonthly;
+  $("planBuyYearlyPrice").textContent = p.pro.priceYearly;
+  const isFree = p.plan === "free";
+  $("planCompare").hidden = !isFree;
+  const canBuy = isFree && p.checkout;
+  $("planActions").hidden = !canBuy;
+  $("planClosed").hidden = !(isFree && !p.checkout);
+  const monthly = $("planBuyMonthly"), yearly = $("planBuyYearly");
+  if (canBuy) {
+    monthly.hidden = !p.checkout.monthly;
+    yearly.hidden = !p.checkout.yearly;
+    if (p.checkout.monthly) monthly.href = p.checkout.monthly;
+    if (p.checkout.yearly) yearly.href = p.checkout.yearly;
+  }
+  $("planFoot").hidden = p.plan === "admin";
+  const manage = $("planManage");
+  manage.hidden = !(p.plan === "pro" && p.portal);
+  if (p.portal) manage.href = p.portal;
+}
+
+function openPlanSheet(reason) {
+  const r = $("planReason");
+  r.hidden = !reason;
+  r.textContent = reason || "";
+  renderPlan();
+  const d = els.planDialog;
+  if (!d.open) {
+    if (typeof d.showModal === "function") d.showModal();
+    else d.setAttribute("open", "");
+  }
+  loadPlan();
+}
+
+// A 402 from the server: say why, and show the way to Pro.
+function onPlanLimit(message) {
+  setStatus(message || "That's part of Pro", "err");
+  if (state.user) openPlanSheet(message);
+}
+
+els.planBtn.addEventListener("click", () => openPlanSheet());
+$("planClose").addEventListener("click", () => els.planDialog.close());
+els.planDialog.addEventListener("click", (e) => { if (e.target === els.planDialog) els.planDialog.close(); });
+
+// Back from Stripe Checkout: the webhook can land a moment after the
+// redirect, so look again a few times before giving up.
+(function welcomeBackFromCheckout() {
+  const params = new URLSearchParams(location.search);
+  if (!params.has("upgraded")) return;
+  history.replaceState(null, "", location.pathname + location.hash);
+  let tries = 0, said = false;
+  const tick = async () => {
+    if (!state.user) { if (tries++ < 20) setTimeout(tick, 500); return; }
+    if (!said) { said = true; setStatus("Finishing your upgrade…", "busy"); }
+    const p = await loadPlan();
+    if (p && p.plan !== "free") { setStatus("Welcome to Pro. Thank you!", "ok"); return; }
+    if (tries++ < 15) setTimeout(tick, 2000);
+    else setStatus("Payment received. Pro can take a minute to show; refresh if it doesn't.", "ok");
+  };
+  tick();
+})();
