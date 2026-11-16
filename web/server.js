@@ -38,6 +38,7 @@ const {
   requireAuth,
   normalizeUsername,
 } = require("./auth");
+const plans = require("./plans");
 
 const PORT = Number(process.env.PORT || 8770);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -62,7 +63,7 @@ const MAX_UPLOAD_BYTES = 200 * 1024 * 1024; // 200 MB
 const ELEVENLABS_KEY_FILE =
   process.env.ELEVENLABS_KEY_FILE ||
   path.join(os.homedir(), ".mavis", "elevenlabs_credentials.json");
-const ELEVENLABS_API_BASE = "https://api.elevenlabs.io/v1";
+const ELEVENLABS_API_BASE = process.env.ELEVENLABS_API_BASE || "https://api.elevenlabs.io/v1";
 // Free tier compatible model - monolingual_v1 / multilingual_v1 are 402.
 const ELEVENLABS_DEFAULT_MODEL = "eleven_turbo_v2_5";
 const ELEVENLABS_DEFAULT_VOICE = "EXAVITQu4vr4xnSDxMaL"; // Sarah
@@ -141,6 +142,38 @@ app.use(
     crossOriginEmbedderPolicy: false,
   })
 );
+// Stripe webhook: needs the exact bytes Stripe signed, so it comes before
+// express.json. Reads the stream itself (and never touches req.body first,
+// which on Vercel is a lazy parser that would hand back an object).
+function readRaw(req, max = 256 * 1024) {
+  if (Buffer.isBuffer(req.rawBody)) return Promise.resolve(req.rawBody);
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (c) => {
+      size += c.length;
+      if (size > max) { reject(Object.assign(new Error("too large"), { status: 413 })); req.destroy(); return; }
+      chunks.push(c);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+app.post("/api/stripe/webhook", wrap(async (req, res) => {
+  const raw = await readRaw(req);
+  const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  if (!secret) return res.status(503).json({ error: "Payments are not set up" });
+  if (!plans.verifyStripeSignature(raw, req.get("stripe-signature"), secret)) {
+    return res.status(400).json({ error: "Bad signature" });
+  }
+  let event;
+  try { event = JSON.parse(raw.toString("utf8")); } catch (_) { return res.status(400).json({ error: "Bad JSON" }); }
+  const note = await plans.applyStripeEvent(event);
+  console.log(`stripe ${event.type} ${event.id}: ${note}`);
+  res.json({ received: true });
+}));
+
 app.use(express.json({ limit: "64kb" }));
 
 const sessionStore = new DbSessionStore();
@@ -319,6 +352,26 @@ app.get("/api/me", (req, res) => {
   }
 });
 
+// ----- Plans (PLANS.md) -----
+app.get("/api/plan", requireAuth, wrap(async (req, res) => {
+  res.json(await plans.planSummary(req.session.userId));
+}));
+
+// A limit the account's plan sets: 402 with a code the app turns into a
+// "See plans" prompt.
+function planError(res, e) {
+  return res.status(402).json({ error: e.message, code: e.code });
+}
+async function bookSlotOk(req, res) {
+  try {
+    await plans.assertCanAddBook(req.session.userId);
+    return true;
+  } catch (e) {
+    if (e instanceof plans.PlanError) { planError(res, e); return false; }
+    throw e;
+  }
+}
+
 // ----- Books endpoints -----
 
 const BOOK_COLUMNS = "id, title, author, kind, size, added_at, last_opened_at, visibility, shared_at, source";
@@ -337,7 +390,7 @@ app.post("/api/books", requireAuth, (req, res, next) => {
   if (storage.MODE !== "local") {
     return res.status(400).json({ error: "Upload with /api/books/uploads on this server" });
   }
-  next();
+  bookSlotOk(req, res).then((ok) => { if (ok) next(); }, next);
 }, upload.single("file"), wrap(async (req, res) => {
   if (!req.file) return res.status(400).json({ error: "No file uploaded" });
   const kind = detectKind(req.file.originalname);
@@ -360,6 +413,7 @@ app.post("/api/books", requireAuth, (req, res, next) => {
 // {mode:"local"} (POST the file to /api/books); Supabase Storage answers
 // with a URL and headers the browser uploads to directly.
 app.post("/api/books/uploads", requireAuth, wrap(async (req, res) => {
+  if (!(await bookSlotOk(req, res))) return;
   if (storage.MODE === "local") return res.json({ mode: "local" });
   const { filename, size } = req.body || {};
   const kind = detectKind(filename);
@@ -383,6 +437,12 @@ app.post("/api/books/uploads/complete", requireAuth, wrap(async (req, res) => {
   const pendingUploads = req.session.pendingUploads || {};
   const pending = Object.hasOwn(pendingUploads, String(objectPath)) ? pendingUploads[objectPath] : null;
   if (!pending) return res.status(400).json({ error: "Unknown upload" });
+  if (!(await bookSlotOk(req, res))) {
+    // Two uploads started while one slot was left: drop the extra file.
+    await storage.remove(objectPath).catch(() => {});
+    delete req.session.pendingUploads[objectPath];
+    return;
+  }
   const size = await storage.uploadedSize(objectPath);
   if (size === null) return res.status(400).json({ error: "Upload not found in storage" });
   await storage.finishUpload(objectPath);
@@ -587,6 +647,7 @@ app.get("/api/finder/search", requireAuth, finderSearchLimiter, wrap(async (req,
 
 app.post("/api/finder/add", requireAuth, finderAddLimiter, wrap(async (req, res) => {
   const { id, title, author } = req.body || {};
+  if (!(await bookSlotOk(req, res))) return;
   let file;
   try {
     file = await finder.download(String(id || ""));
@@ -773,6 +834,7 @@ app.post("/api/bug-reports", requireAuth, bugReportLimiter, wrap(async (req, res
 // ~/.mavis/elevenlabs_credentials.json and never sent to the browser.
 
 app.post("/api/tts", requireAuth, ttsLimiter, async (req, res, next) => {
+  let release = null;
   try {
     const apiKey = loadElevenLabsKey();
     if (!apiKey) {
@@ -790,6 +852,13 @@ app.post("/api/tts", requireAuth, ttsLimiter, async (req, res, next) => {
         error: `text too long (max ${ELEVENLABS_MAX_CHARS} chars per request)`,
       });
     }
+    try {
+      release = await plans.reservePremium(req.session.userId, text.length);
+    } catch (e) {
+      if (e instanceof plans.PlanError) return planError(res, e);
+      throw e;
+    }
+    // From here on, any failure before audio starts gives the minutes back.
     const voiceId = voice_id || ELEVENLABS_DEFAULT_VOICE;
     const modelId = model_id || ELEVENLABS_DEFAULT_MODEL;
     const url = `${ELEVENLABS_API_BASE}/text-to-speech/${encodeURIComponent(voiceId)}?output_format=mp3_44100_128`;
@@ -812,6 +881,7 @@ app.post("/api/tts", requireAuth, ttsLimiter, async (req, res, next) => {
       }),
     });
     if (!upstream.ok || !upstream.body) {
+      await release().catch(() => {});
       const errBody = await upstream.text().catch(() => "");
       // ElevenLabs returns a JSON body with detail.code; peek at it so we
       // can distinguish "invalid_api_key" from "quota_exceeded" - they
@@ -864,6 +934,7 @@ app.post("/api/tts", requireAuth, ttsLimiter, async (req, res, next) => {
     }
     res.end();
   } catch (e) {
+    if (release && !res.headersSent) await release().catch(() => {});
     next(e);
   }
 });

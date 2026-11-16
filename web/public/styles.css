@@ -886,3 +886,38 @@ input[type="range"]:disabled { cursor: default; opacity: 0.55; }
 .bug-include input { margin-top: 3px; width: 18px; height: 18px; flex: none; accent-color: var(--color-accent); }
 .bug-error { color: var(--color-err); }
 .bug-actions { display: flex; justify-content: flex-end; margin-top: var(--space-4); }
+
+
+/* ----- Plans ----- */
+.plan-chip {
+  min-height: 32px; padding: 0 var(--space-3); border-radius: 999px;
+  border: 1px solid var(--color-line-strong); background: var(--color-bg-elev); color: var(--color-fg-muted);
+  font: inherit; font-size: var(--text-xs); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; cursor: pointer;
+}
+.plan-chip:hover { background: var(--color-bg-sunk); }
+.plan-chip:focus-visible { box-shadow: var(--shadow-focus); outline: none; }
+.plan-chip[data-plan="pro"], .plan-chip[data-plan="admin"] { background: var(--color-accent-soft); border-color: transparent; color: var(--color-accent); }
+.plan-meter { margin: 0 0 var(--space-3); font-size: var(--text-sm); color: var(--color-fg-muted); }
+.plan-meter button { border: 0; background: none; padding: 0; font: inherit; color: var(--color-accent); font-weight: 600; cursor: pointer; text-decoration: underline; text-underline-offset: 3px; }
+.plan-meter-full { color: var(--color-fg); }
+.plan-reason { padding: var(--space-3); margin-bottom: var(--space-4); border-radius: var(--radius-md); background: var(--color-accent-soft); color: var(--color-fg); font-weight: 500; }
+.plan-now { margin-bottom: var(--space-4); }
+.plan-name { font-family: var(--font-display); font-size: var(--text-2xl); font-weight: 600; margin: 2px 0 var(--space-2); }
+.plan-usage { list-style: none; padding: 0; margin: 0; display: grid; gap: var(--space-1); font-size: var(--text-sm); color: var(--color-fg-muted); }
+.plan-compare { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); margin-bottom: var(--space-4); }
+.plan-card { padding: var(--space-4); border: 1.5px solid var(--color-line); border-radius: var(--radius-md); background: var(--color-bg); min-width: 0; }
+.plan-card-pro { border-color: var(--color-accent); }
+.plan-card h3 { font-weight: 700; margin-bottom: var(--space-1); }
+.plan-price { font-family: var(--font-display); font-size: var(--text-xl); font-weight: 600; margin-bottom: var(--space-2); }
+.plan-per { font-family: var(--font-ui); font-size: var(--text-sm); color: var(--color-fg-muted); font-weight: 400; }
+.plan-card ul { padding-left: 1.1em; margin: 0; display: grid; gap: var(--space-1); font-size: var(--text-sm); }
+.plan-actions { display: grid; gap: var(--space-2); margin-bottom: var(--space-2); }
+.plan-actions .btn, .plan-manage { justify-content: center; text-decoration: none; text-align: center; }
+.plan-manage { display: flex; margin-bottom: var(--space-2); }
+@media (max-width: 600px) {
+  .plan-compare { grid-template-columns: 1fr; }
+  /* "You're on Free" already says what Free has; keep Pro and its buttons in view. */
+  .plan-compare .plan-card:not(.plan-card-pro) { display: none; }
+  .topbar-meta { gap: var(--space-1); }
+  .plan-chip { min-height: 30px; padding: 0 10px; font-size: 11px; }
+}
